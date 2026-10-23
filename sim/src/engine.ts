@@ -74,6 +74,13 @@ const REJECTED_COMMANDS: Record<string, RejectionReason> = {
 	redo: 'history_unavailable'
 };
 
+/**
+ * True once undo/redo are served from a history that lives inside the state (S1U): reported by `/health` as
+ * `historyInState`, and the API turns it into `features.undo`. Derived from REJECTED_COMMANDS, so removing the two
+ * entries above flips it with no other edit.
+ */
+export const HISTORY_IN_STATE: boolean = !Object.hasOwn(REJECTED_COMMANDS, 'undo') && !Object.hasOwn(REJECTED_COMMANDS, 'redo');
+
 /** Pure read of the snapshot at `now`: no catch-up, nothing persisted. */
 export async function snapshot(state: StateObject, now: number): Promise<GameSnapshot> {
 	const { value } = await withMock(state, effectiveNow(state, now), (mock) => (mock as unknown as { snap(): GameSnapshot }).snap());

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { OFFLINE_CAP_H } from '$lib/content/balance';
-import { accountedTo, bootstrap, catchUp, command, snapshot } from '../src/engine';
+import { HISTORY_IN_STATE, accountedTo, bootstrap, catchUp, command, snapshot } from '../src/engine';
 import type { StateObject } from '../src/host';
 import { EXTRAS, H, PLAYER, T0, buildTutorialLine, newFactory, pickExtras, withExtras } from './helpers';
 
@@ -104,6 +104,11 @@ describe('command', () => {
 			const r = await command(st0, T0 + 1000, { type });
 			assert.deepEqual(r.result, { ok: false, error: 'history_unavailable', code: 'history_unavailable' });
 		}
+	});
+
+	it('HISTORY_IN_STATE (the /health flag behind the API features.undo) mirrors the undo/redo rejection', async () => {
+		const rejected = (await command(await newFactory(), T0 + 1000, { type: 'undo' })).result.ok === false;
+		assert.equal(HISTORY_IN_STATE, !rejected, 'false while undo is rejected, true once S1U serves it');
 	});
 
 	it('real build commands work: the whole tutorial line is placed and the first order is served', async () => {

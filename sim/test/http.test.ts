@@ -31,10 +31,11 @@ async function post(path: string, body: unknown, raw = false): Promise<{ status:
 const bootstrapBody = (state: unknown = null, now = T0) => ({ state, now, player: PLAYER });
 
 describe('GET /health', () => {
-	it('reports ok, service and the sim commit', async () => {
+	it('reports ok, service, the sim commit and whether the undo history lives in the state', async () => {
 		const res = await fetch(base + '/health');
 		assert.equal(res.status, 200);
-		assert.deepEqual(await res.json(), { status: 'ok', service: 'sim', simCommit: 'abc1234' });
+		// historyInState: false until S1U removes undo/redo from engine.ts REJECTED_COMMANDS (the API's features.undo follows it)
+		assert.deepEqual(await res.json(), { status: 'ok', service: 'sim', simCommit: 'abc1234', historyInState: false });
 		assert.ok(res.headers.get('x-request-id'));
 	});
 	it('echoes X-Request-ID', async () => {

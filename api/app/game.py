@@ -7,7 +7,11 @@ Rules enforced in this module:
     persist the state but keep the version, so passive sync never causes a 409);
   * idempotency keys live in `state.meta.idempotency` (deque, last 50) in the same transaction as the state, with a
     Redis fast-path cache (`idem:{user_id}:{key}`, TTL 600 s) that is fail-open;
-  * the sim gets `now = max(server_now_ms, state.lastTick)` (monotonic per factory).
+  * the sim gets `now = max(server_now_ms, state.lastTick)` (monotonic per factory);
+  * `submitShift` is checked by app/shift.py under the lock BEFORE the sim (a violation is a recorded rejection: no sim
+    command, no version bump, no shift consumed) and an accepted one is logged in `shifts` in the same transaction;
+  * undo/redo have no special case: they go to the sim like any command (rejected while the sim has no history in the
+    state, a normal effect command the day the sim serves them).
 """
 from __future__ import annotations
 
@@ -24,7 +28,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .errors import AppError
-from .models import Factory, Season, User
+from .models import Factory, Season, Shift, User
+from .shift import RULE_CODES, RULES, validate_shift
 from .sim_client import SimClient, now_ms
 
 log = logging.getLogger("mosprom.game")
@@ -33,7 +38,8 @@ SEASON_DAYS = 7  # SEASON_DAYS of vendor/frontend content/balance.ts; real rotat
 OFFLINE_CAP_H = 8.0
 IDEMPOTENCY_MAX = 50
 IDEMPOTENCY_TTL_S = 600
-FEATURES: dict[str, bool] = {"undo": False, "serverOrderEta": False}
+FEATURES: dict[str, bool] = {"undo": False, "serverOrderEta": False}  # `undo` is replaced by the sim /health flag
+STATE_WARN_BYTES = 150 * 1024  # spec "not more than 150 KB" (guaranteed only after S1U); bigger writes log state_bytes
 # sim rejection reasons that become the top-level error code; every other reason is 422 command_rejected
 TOP_LEVEL_REASONS = frozenset({"daily_limit_exceeded", "minigame_too_short", "impossible_score"})
 SEASON_LOCK_KEY = 0x4D50_5301  # pg_advisory_xact_lock: serialises creation of the first open season
@@ -129,14 +135,34 @@ def keep_meta(old_state: dict[str, Any], new_state: dict[str, Any]) -> dict[str,
     return new_state
 
 
+def reason_code(reason: str) -> str:
+    """Top-level error code of a rejection reason: the three sim reasons themselves, the submitShift rules of
+    app/shift.py by their table, everything else `command_rejected`."""
+    return reason if reason in TOP_LEVEL_REASONS else RULE_CODES.get(reason, "command_rejected")
+
+
 def rejection(reason: str, message: str, version: int, snapshot: dict[str, Any], *, replayed: bool = False) -> AppError:
     """422 for a command refused by the game rules. Reasons daily_limit_exceeded / minigame_too_short /
-    impossible_score are the top-level code, the rest is `command_rejected` + details.reason."""
-    code = reason if reason in TOP_LEVEL_REASONS else "command_rejected"
+    impossible_score (and every submitShift rule, e.g. duration_too_long -> impossible_score) give the top-level code,
+    the rest is `command_rejected`; `details.reason` is always the precise reason."""
+    code = reason_code(reason)
     details: dict[str, Any] = {"reason": reason, "message": message, "version": version, "snapshot": snapshot}
     if replayed:
         details["replayed"] = True
     return AppError(code, message, status=422, details=details)
+
+
+def building_boost(state: dict[str, Any], building_id: str) -> float | None:
+    """`boost.mult` of building `building_id` in the (post-command) state, None when unknown."""
+    sim = state.get("sim")
+    layout = sim.get("layout") if isinstance(sim, dict) else None
+    buildings = layout.get("buildings") if isinstance(layout, dict) else None
+    for b in buildings if isinstance(buildings, list) else []:
+        if isinstance(b, dict) and b.get("id") == building_id:
+            boost = b.get("boost")
+            mult = boost.get("mult") if isinstance(boost, dict) else None
+            return float(mult) if _num(mult, -1) >= 0 else None
+    return None
 
 
 def _ms(dt: datetime) -> int:
@@ -186,12 +212,18 @@ class GameService:
 
     @staticmethod
     async def _persist(session: AsyncSession, user_id: int, old_state: dict[str, Any], state: dict[str, Any],
-                       snapshot: dict[str, Any], version: int | None = None) -> None:
-        """State + snapshot + denormalised columns (+ version when a command had an effect), one UPDATE."""
-        values: dict[str, Any] = {**denormalise(snapshot), "state": keep_meta(old_state, state),
-                                  "snapshot": snapshot, "updated_at": func.now()}
+                       snapshot: dict[str, Any] | None, version: int | None = None) -> None:
+        """State + snapshot + denormalised columns (+ version when a command had an effect), one UPDATE.
+        `snapshot=None` (a rejection decided without a catch-up) writes the state only."""
+        values: dict[str, Any] = {"state": keep_meta(old_state, state), "updated_at": func.now()}
+        if snapshot is not None:
+            values.update(denormalise(snapshot), snapshot=snapshot)
         if version is not None:
             values["version"] = version
+        size = len(orjson.dumps(values["state"]))
+        if size > STATE_WARN_BYTES:  # size audit (spec: <= 150 KB, guaranteed only once the undo history is diffs)
+            log.warning("factory state is over the size target", extra={"fields": {
+                "state_bytes": size, "limit_bytes": STATE_WARN_BYTES, "user_id": user_id}})
         await session.execute(update(Factory).where(Factory.user_id == user_id).values(**values))
 
     @staticmethod
@@ -209,6 +241,17 @@ class GameService:
                 insert(Season).values(starts_at=starts, ends_at=starts + timedelta(days=SEASON_DAYS), days=SEASON_DAYS)
                 .returning(Season.id))).scalar_one()
         return season_id
+
+    @staticmethod
+    async def _log_shift(session: AsyncSession, user_id: int, season_id: int, cmd: dict[str, Any],
+                         state: dict[str, Any]) -> None:
+        """One `shifts` row per ACCEPTED submitShift, in the transaction of the command (HR analytics, S6)."""
+        r = cmd["result"]
+        await session.execute(insert(Shift).values(
+            user_id=user_id, season_id=season_id, building_id=cmd["buildingId"], profession=r["profession"],
+            game_id=r["gameId"], result=r["result"], score=r["score"], duration_ms=round(r["durationMs"]),
+            difficulty=r.get("difficulty"), metrics=r.get("metrics") or {},
+            boost_mult=building_boost(state, cmd["buildingId"])))
 
     # ---- redis idempotency fast path (fail-open)
 
@@ -252,8 +295,9 @@ class GameService:
             await self._persist(session, user.id, locked.state, state, snapshot)
             season = (await session.execute(select(Season).where(Season.id == locked.season_id))).scalar_one()
             season_out = {"id": season.id, "startsAt": _ms(season.starts_at), "endsAt": _ms(season.ends_at)}
+        features = {**FEATURES, "undo": await self.sim.history_in_state()}  # outside the lock; cached 60 s, fail-closed
         return {"version": locked.version, "serverTime": now, "season": season_out,
-                "features": dict(FEATURES), "snapshot": snapshot}
+                "features": features, "snapshot": snapshot}
 
     # ---- POST /api/command
 
@@ -288,8 +332,14 @@ class GameService:
                     raise AppError("version_conflict", "Factory changed since your last sync, refresh and retry",
                                    details={"current_version": locked.version})
                 now = monotonic_now(locked.state)
-                out = await self.sim.command(locked.state, cmd, now)
-                state, result, snapshot = _expect(out, "state", "result", "snapshot")
+                rule = validate_shift(cmd.get("result")) if cmd.get("type") == "submitShift" else None
+                if rule is not None:  # impossible shift: refused before the sim, recorded like any rejection
+                    (snapshot,) = _expect(await self.sim.snapshot(locked.state, now), "snapshot")
+                    state = dict(locked.state)  # untouched but for meta.idempotency (added below)
+                    result = {"ok": False, "code": rule, "error": RULES[rule][1]}
+                else:
+                    out = await self.sim.command(locked.state, cmd, now)
+                    state, result, snapshot = _expect(out, "state", "result", "snapshot")
                 if result.get("ok") is True:
                     new_version = locked.version + 1
                     short = {k: result[k] for k in ("toast", "rewards") if result.get(k) is not None}
@@ -304,8 +354,10 @@ class GameService:
                     entry = {"key": key, "ok": False, "code": reason, "version": new_version,
                              "result": {"message": message}, "at": now}
                 state = with_idempotency(locked.state, state, entry)
-                await self._persist(session, user.id, locked.state, state, snapshot,
+                await self._persist(session, user.id, locked.state, state, None if rule else snapshot,
                                     version=new_version if rejected is None else None)
+                if rejected is None and cmd.get("type") == "submitShift":
+                    await self._log_shift(session, user.id, locked.season_id, cmd, state)
         if replay is not None:
             return await self._replay(*replay)
         await self._idem_put(user.id, key, entry)  # only after the commit

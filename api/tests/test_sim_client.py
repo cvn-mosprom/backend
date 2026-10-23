@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -143,3 +145,54 @@ async def test_garbage_response_is_503(content):
 async def test_aclose_is_idempotent_enough():
     sim = client_for(lambda r: httpx.Response(200, json={}))
     await sim.aclose()
+
+
+# ---- history_in_state: the /health flag behind features.undo
+
+def health_handler(replies: list, seen: list | None = None):
+    """Answers /health with the next reply of `replies` (an exception is raised, a dict is the JSON body)."""
+    it = iter(replies)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request.url.path)
+        reply = next(it)
+        if isinstance(reply, Exception):
+            raise reply
+        return httpx.Response(200, json=reply)
+
+    return handler
+
+
+@pytest.mark.parametrize("body,expected", [
+    ({"status": "ok", "historyInState": True}, True),
+    ({"status": "ok", "historyInState": False}, False),
+    ({"status": "ok"}, False),  # an older sim build: no flag
+    ({"status": "ok", "historyInState": "yes"}, False),  # only a real boolean true counts
+])
+async def test_history_in_state_reads_the_health_flag(body, expected):
+    sim = client_for(health_handler([body]))
+    assert await sim.history_in_state() is expected
+
+
+async def test_history_in_state_is_cached_for_60_s(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("app.sim_client.time", SimpleNamespace(monotonic=lambda: now[0], time=time.time))
+    seen: list = []
+    sim = client_for(health_handler([{"historyInState": False}, {"historyInState": True}, {"historyInState": False}], seen))
+    assert await sim.history_in_state() is False
+    now[0] += 59.9
+    assert await sim.history_in_state() is False and seen == ["/health"]  # served from the cache
+    now[0] += 0.2
+    assert await sim.history_in_state() is True and len(seen) == 2  # expired -> asked again
+    now[0] += 30
+    assert await sim.history_in_state() is True and len(seen) == 2
+    now[0] += 31
+    assert await sim.history_in_state() is False and len(seen) == 3
+
+
+async def test_history_in_state_fails_closed_and_does_not_cache_errors():
+    sim = client_for(health_handler([httpx.ConnectError("down"), {"historyInState": True}]))
+    assert await sim.history_in_state() is False  # sim down: no undo, no exception
+    assert await sim.history_in_state() is True  # the failure was not remembered
+    assert await client_for(lambda r: httpx.Response(500)).history_in_state() is False

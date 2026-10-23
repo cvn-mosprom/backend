@@ -375,11 +375,13 @@ async def test_daily_limit_exceeded_is_a_top_level_code(game):
     assert replay["details"]["replayed"] is True
 
 
-@pytest.mark.parametrize("cmd,code", [(shift(durationMs=100), "minigame_too_short"), (shift(score=2), "impossible_score")])
-async def test_submit_shift_validation_codes(game, cmd, code):
+@pytest.mark.parametrize("cmd,code,reason", [(shift(durationMs=100), "minigame_too_short", "minigame_too_short"),
+                                              (shift(score=2), "impossible_score", "score_out_of_range")])
+async def test_submit_shift_validation_codes(game, cmd, code, reason):
+    """Top-level code + the violated rule in details.reason (the full rule table: tests/test_shift.py)."""
     await bootstrap(game)
     err = assert_error(await command(game, 0, key(1), cmd), 422, code)
-    assert err["details"]["reason"] == code
+    assert err["details"]["reason"] == reason
     assert (await factory_row(game))["version"] == 0
 
 

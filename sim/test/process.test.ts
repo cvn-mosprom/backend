@@ -95,7 +95,7 @@ async function scenario(args: string[]) {
 		assert.ok(!pids.includes(child.pid!), 'the primary does not serve');
 
 		const health = (await (await fetch(base + '/health')).json()) as Record<string, unknown>;
-		assert.deepEqual(health, { status: 'ok', service: 'sim', simCommit: 'cafe123' });
+		assert.deepEqual(health, { status: 'ok', service: 'sim', simCommit: 'cafe123', historyInState: false });
 
 		const res = await fetch(base + '/v1/bootstrap', {
 			method: 'POST',

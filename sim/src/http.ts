@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Command } from '$lib/api/types';
-import { COMMAND_TYPES, advance, bootstrap, command, snapshot, type PlayerInfo } from './engine';
+import { COMMAND_TYPES, HISTORY_IN_STATE, advance, bootstrap, command, snapshot, type PlayerInfo } from './engine';
 import type { StateObject } from './host';
 
 export const BODY_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -176,7 +176,7 @@ export function createRequestHandler(opts: HandlerOptions) {
 		try {
 			if (path === '/health') {
 				if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'method_not_allowed', 'use GET');
-				return send(res, 200, { status: 'ok', service: 'sim', simCommit: opts.simCommit }, requestId);
+				return send(res, 200, { status: 'ok', service: 'sim', simCommit: opts.simCommit, historyInState: HISTORY_IN_STATE }, requestId);
 			}
 			const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
 			if (!route) throw new HttpError(404, 'not_found', `no such endpoint: ${path}`);

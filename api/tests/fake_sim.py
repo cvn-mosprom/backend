@@ -4,8 +4,10 @@ Not a game: just enough deterministic semantics to test the API around it.
   * state is an opaque dict; unknown top-level fields (e.g. `meta`) are round-tripped untouched, like the real sim;
   * catch-up: +1 credit and +1 shipped bottle per second since `lastTick`, capped by `capHours` / 8 h;
   * `place` costs 100 credits (`insufficient_funds` when short), `submitShift` consumes `season.shiftsLeft`
-    (`daily_limit_exceeded` at 0, `minigame_too_short` below 400 ms), `acceptOrder` is rejected without `code`
-    (the generic fallback), tick/undo/redo are rejected like the real sim does;
+    (`daily_limit_exceeded` at 0, `minigame_too_short` below 400 ms, `impossible_score` outside 0..1 - the sim's second line
+    behind the API's own checks), `acceptOrder` is rejected without `code` (the generic fallback), tick/undo/redo are
+    rejected like the real sim does until `history_in_state` is switched on (then undo/redo are ordinary accepted commands
+    and `/health` says `historyInState: true`); `bloat` pads the state of every command (state size guard);
   * `calls` records every request body so tests can assert what the API forwarded and with which `now`.
 """
 from __future__ import annotations
@@ -43,6 +45,9 @@ class FakeSim:
         self.status: int | None = None  # force this HTTP status on every call
         self.garbage: dict[str, Any] | None = None  # force this 200 body
         self.delay = 0.0  # seconds slept before answering (to make requests overlap)
+        self.history_in_state = False  # S1U landed: /health flag + undo/redo accepted
+        self.bloat = 0  # bytes of padding added to the state by every command
+        self.health_calls = 0  # /health is not recorded in `calls` (existing tests pin the /v1 call lists)
 
     # ---- plumbing
     def client(self) -> SimClient:
@@ -57,6 +62,10 @@ class FakeSim:
     async def handle(self, request: httpx.Request) -> httpx.Response:
         if self.down:
             raise httpx.ConnectError("sim is down (test)", request=request)
+        if request.url.path == "/health":
+            self.health_calls += 1
+            return httpx.Response(200, json={"status": "ok", "service": "sim", "simCommit": "fake",
+                                             "historyInState": self.history_in_state})
         body = json.loads(request.content) if request.content else {}
         self.calls.append({"path": request.url.path, "body": body})
         if self.delay:
@@ -107,6 +116,12 @@ class FakeSim:
         state = copy.deepcopy(b["state"])
         cmd = b["cmd"]
         t = cmd["type"]
+        if self.bloat:
+            state["pad"] = "x" * self.bloat
+        if t in ("undo", "redo") and self.history_in_state:
+            self._catch_up(state, b["now"])
+            state[t] = state.get(t, 0) + 1  # a visible effect
+            return self._out(state, b["now"], {"ok": True, "toast": "Отменено" if t == "undo" else "Возвращено"})
         if t in ("tick", "undo", "redo"):  # not served (real sim: REJECTED_COMMANDS)
             code = "tick_removed" if t == "tick" else "history_unavailable"
             return self._out(state, b["now"], {"ok": False, "error": code, "code": code})
@@ -136,6 +151,12 @@ class FakeSim:
                 return reject("Невозможный счёт", "impossible_score")
             state["season"]["shiftsLeft"] -= 1
             state["xp"] += 10
+            r = cmd["result"]  # like the mock: the station gets a boost x(1 + 0.3 * score), halved score on a fail
+            blds = state.setdefault("sim", {}).setdefault("layout", {}).setdefault("buildings", [])
+            station = next((x for x in blds if x["id"] == cmd["buildingId"]), None)
+            if station is None:
+                blds.append(station := {"id": cmd["buildingId"]})
+            station["boost"] = {"mult": round(1 + 0.3 * r["score"] * (1 if r["result"] == "win" else 0.5), 2)}
             return self._out(state, b["now"], {"ok": True, "toast": "Буст", "rewards": {"xp": 10}})
         if t == "acceptOrder":
             return reject("Заказ недоступен", None)  # no `code`: the API must fall back to `rejected`

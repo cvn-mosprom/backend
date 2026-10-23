@@ -9,14 +9,17 @@ older sim build.
 """
 from __future__ import annotations
 
+import json
 import os
+import time
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
 
 from app.contract.generated import GameSnapshot
 from app.sim_client import SimClient
-from tests.game_helpers import advance, bootstrap, command, factory_row, key, me, shift
+from tests.game_helpers import Clock, advance, bootstrap, command, factory_row, key, me, shift
 from tests.helpers import TEST_DB_URL, TEST_REDIS_URL, dev
 from tests.test_errors import assert_error
 
@@ -160,3 +163,74 @@ async def test_sim_down_degrades_factory_me_and_503s_the_rest(make_client, clean
     assert_error(await command(client, 0, key(1), BREW_TANK), 503, "sim_unavailable")
     assert_error(await client.get("/api/bootstrap", headers=dev(1)), 503, "sim_unavailable")
     await dead.aclose()
+
+
+# ================================================================ state size audit (spec: state <= 150 KB, after S1U)
+
+BIG_LAYOUT = Path(__file__).with_name("big_demo_layout.json")  # vendor lib/sim/templates.ts bigDemoLayout(): 48 buildings
+STATE_LIMIT_BYTES = 150 * 1024
+LEVEL5_XP = 1400  # content/levels.ts LEVEL_XP[5]; MockGameApi.loadDemo('big') sets level 5 for the big layout
+
+
+def session_script(layout: dict) -> list[dict]:
+    """~120 commands a busy player might issue on the big layout: build edits (the ones the undo history records),
+    orders, market, loan, shifts, dialogs, plus undo/redo. Many are refused by the rules - that is fine, they are
+    recorded in the idempotency log, which is part of the state too."""
+    ids = [b["id"] for b in layout["buildings"]]
+    docks = [b["id"] for b in layout["buildings"] if b["kind"] in ("dock", "ramp", "shipping")] or ids[-1:]
+    cmds: list[dict] = []
+    for i in range(24):
+        bid = ids[(i * 5) % len(ids)]
+        cmds += [
+            {"type": "rotate", "buildingId": bid},
+            {"type": "upgrade", "buildingId": bid},
+            {"type": "paint", "cells": [{"x": i % 20, "y": 0}, {"x": (i + 1) % 20, "y": 0}], "color": ("yellow", "green", "red")[i % 3]},
+            {"type": "move", "buildingId": bid, "x": layout["buildings"][(i * 5) % len(ids)]["x"], "y": layout["buildings"][(i * 5) % len(ids)]["y"], "rot": (i + 1) % 4},
+            {"type": "undo"} if i % 4 == 3 else {"type": "repair", "buildingId": bid},
+            {"type": "sellMarket", "sku": "kvas_ochakovsky_15", "boxes": 1},
+        ]
+    cmds += [{"type": "takeLoan", "amount": 500}, {"type": "repayLoan", "amount": 100}, {"type": "expandHangar", "side": "N"},
+             {"type": "acceptOrder", "dockId": docks[0], "orderId": "none"}, {"type": "renameFactory", "name": "Большой цех"},
+             {"type": "setUniversity", "university": "МГУ"}, {"type": "factSeen", "id": "f1"}, {"type": "redo"}]
+    cmds += [{"type": "submitShift", "buildingId": ids[i], "result": {
+        "gameId": "e2e", "profession": "operator", "result": "win", "score": 0.7, "durationMs": 4000, "difficulty": 0.5,
+        "metrics": {"accuracy": 0.8, "misses": 1, "reaction_ms": 900}}} for i in range(6)]
+    return cmds
+
+
+@pytest.mark.xfail(reason="the 150 KB target is only guaranteed after S1U (undo history as diffs inside the state); "
+                          "today the history lives outside the state, so this usually passes - report the numbers either way",
+                   strict=False)
+async def test_state_stays_under_150_kb_after_a_long_session_on_the_big_layout(real, monkeypatch):
+    clock = Clock(int(time.time() * 1000))
+    monkeypatch.setattr("app.game.now_ms", clock)
+    await bootstrap(real)
+    layout = json.loads(BIG_LAYOUT.read_text("utf-8"))
+    state = (await factory_row(real))["state"]
+    state["sim"]["layout"] = layout  # MockGameApi.loadDemo('big'): the layout + level 5, plus money for the session
+    state["sim"]["credits"] = 50_000_000
+    state["sim"]["xp"] = LEVEL5_XP
+    state["level"] = 5
+    for q in ("q_intro", "q_brew", "q_bottles", "q_filler", "q_line"):
+        if q not in state["dialogs"]["done"]:
+            state["dialogs"]["done"].append(q)
+    await real.db.execute("UPDATE factories SET state = $1::jsonb", json.dumps(state))
+
+    version, accepted, rejected, peak = 0, 0, 0, 0
+    for i, cmd in enumerate(session_script(layout)):
+        clock.t += 20 * 60_000  # server time passes between the actions
+        resp = await command(real, version, f"audit-{i:05d}", cmd)
+        if resp.status_code == 200:
+            version, accepted = resp.json()["version"], accepted + 1
+        else:
+            assert resp.status_code == 422, resp.text
+            version, rejected = resp.json()["error"]["details"]["version"], rejected + 1
+        if i % 20 == 0:
+            peak = max(peak, len(json.dumps((await factory_row(real))["state"])))
+    assert accepted >= 25, f"the session must actually change the factory ({accepted} accepted, {rejected} rejected)"
+    final = (await factory_row(real))["state"]
+    size = len(json.dumps(final))
+    print(f"state_bytes={size} peak_sampled={max(peak, size)} accepted={accepted} rejected={rejected} "
+          f"buildings={len(final['sim']['layout']['buildings'])} idempotency={len(final['meta']['idempotency'])}")
+    assert size < STATE_LIMIT_BYTES, (f"state is {size} bytes (> {STATE_LIMIT_BYTES}) after {accepted} accepted / "
+                                      f"{rejected} rejected commands")

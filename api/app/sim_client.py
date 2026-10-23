@@ -16,6 +16,9 @@ from .errors import AppError
 
 log = logging.getLogger("mosprom.sim")
 
+HISTORY_TTL_S = 60.0  # how long `historyInState` of /health is trusted (features.undo)
+HISTORY_TIMEOUT_S = 1.0
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -27,6 +30,7 @@ def _ts(now: int | None) -> int:
 
 class SimClient:
     def __init__(self, base_url: str, timeout_s: float = 3.0, transport: httpx.AsyncBaseTransport | None = None):
+        self._history: tuple[float, bool] | None = None  # (monotonic expiry, historyInState)
         self._http = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(timeout_s),
@@ -68,6 +72,19 @@ class SimClient:
 
     async def health(self, timeout: float | None = None) -> dict[str, Any]:
         return await self._call("GET", "/health", timeout=timeout)
+
+    async def history_in_state(self) -> bool:
+        """`historyInState` of the sim /health: undo/redo are served from a history that lives in the state (S1U).
+        Cached per client (= per process) for 60 s. Fail-closed: any error or a missing flag is False, errors are not cached."""
+        cached = self._history
+        if cached is not None and time.monotonic() < cached[0]:
+            return cached[1]
+        try:
+            flag = (await self.health(timeout=HISTORY_TIMEOUT_S)).get("historyInState") is True
+        except AppError:
+            return False
+        self._history = (time.monotonic() + HISTORY_TTL_S, flag)
+        return flag
 
     async def bootstrap(self, state: dict[str, Any] | None, player: dict[str, Any],
                         now: int | None = None) -> dict[str, Any]:

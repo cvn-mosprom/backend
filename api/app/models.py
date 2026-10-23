@@ -80,3 +80,27 @@ class Factory(Base):
 
 Index("ix_factories_season_stars", Factory.season_id, Factory.stars.desc())
 Index("ix_factories_season_quality", Factory.season_id, Factory.quality_avg.desc())
+
+
+class Shift(Base):
+    """Log of ACCEPTED submitShift commands, written in the transaction of the command (feeds HR analytics, S6).
+    The daily limit is not derived from here: it lives in factories.state (season.shiftsLeft)."""
+
+    __tablename__ = "shifts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"), nullable=False)
+    building_id: Mapped[str] = mapped_column(Text, nullable=False)
+    profession: Mapped[str] = mapped_column(Text, nullable=False)
+    game_id: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[str] = mapped_column(Text, nullable=False)  # win | fail
+    score: Mapped[float] = mapped_column(sa.REAL, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    difficulty: Mapped[float | None] = mapped_column(sa.REAL)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    boost_mult: Mapped[float | None] = mapped_column(sa.REAL)  # boost the shift gave the station (state.sim.layout)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_shifts_user_created", Shift.user_id, Shift.created_at)

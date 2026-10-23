@@ -105,3 +105,11 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
 - **Sim (implemented in S2):** rejections carry `result.code` (table: `sim/src/reasons.ts`); `/v1/advance` accepts `reason`, and
   `background` accumulates into an unseen offline report instead of replacing it; the sim itself enforces
   `effectiveNow = max(now, state.lastTick)` on every endpoint.
+
+## S3 decisions
+
+- submitShift is validated in the API (`api/app/shift.py`) before the sim call; the sim keeps its own checks as a second line.
+  Top-level code `minigame_too_short` or `impossible_score`; `details.reason` is the rule name (e.g. `score_out_of_range`,
+  `duration_too_long`, `win_score_too_low`). Accepted shifts are logged in table `shifts` in the same transaction.
+- `features.undo` = sim `/health.historyInState` (false until S1U removes undo/redo from `REJECTED_COMMANDS`), cached 60 s.
+- States over 150 KB are logged with `state_bytes`; the 150 KB audit test is xfail(strict=False) until S1U.

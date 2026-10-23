@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_overrides: dict[str, int] = {}
 
+    # Leaderboard (S4): demo bots (users.is_bot) are visible unless BOTS_ENABLED=0; the top-100 is cached in Redis.
+    bots_enabled: bool = True
+    leaderboard_cache_ttl_s: int = 20  # spec: 15-30 s
+
     @field_validator("app_env", mode="before")
     @classmethod
     def _lower_env(cls, v: object) -> object:

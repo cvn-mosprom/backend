@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api", tags=["game"])
 
 def get_game(request: Request) -> GameService:
     s = request.app.state
-    return GameService(s.sessionmaker, s.redis, s.sim)
+    return GameService(s.sessionmaker, s.redis, s.sim, bots_enabled=s.settings.bots_enabled)
 
 
 Game = Annotated[GameService, Depends(get_game)]

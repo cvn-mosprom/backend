@@ -23,3 +23,9 @@ test gets a fresh user, so tests are independent and need no cleanup.
 
 `tutorial.py` holds the exact command sequence (derived from `content/tutorial.ts`, `sim/templates.ts tutorialLayout`,
 `content/dialogs.ts` quest ids) and was verified against the sim service directly.
+
+## S4 (leaderboard) - `test_s4_leaderboard.py`
+
+Seeds the demo bots once per session with `docker compose exec -T api python -m app.seed_bots` (run from the repo root; the tests skip when that
+fails), then checks all four tabs (rows, `me`, `gapTo51`, `universities`), `limit` / university filter / cache, the error paths, the public
+`GET /api/factory/{id}` view of a bot and of a real player, `snapshot.rank` == leaderboard place, and the `GET /api/season/summary` shape.

@@ -113,3 +113,26 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
   `duration_too_long`, `win_score_too_low`). Accepted shifts are logged in table `shifts` in the same transaction.
 - `features.undo` = sim `/health.historyInState` (false until S1U removes undo/redo from `REJECTED_COMMANDS`), cached 60 s.
 - States over 150 KB are logged with `state_bytes`; the 150 KB audit test is xfail(strict=False) until S1U.
+
+## S4 decisions (part A: leaderboard, visit, summary, bots)
+
+- **Source of truth:** denormalised `factories` columns (`stars`, `quality_avg`, `speed_bph`, `university`, `is_bot`; migration 0004), refreshed
+  from the sim snapshot on every write. `quality_avg` is 0 until something is produced (the sim reports 1 for an empty factory).
+  `speed_bph` is derived (the snapshot has no flow rate): `snapshot.factory.bottlesPerHour` if a sim ever provides it, else
+  d(produced)/d(time) between a baseline kept in `state.meta.speed` {t,p} and now (baseline moves after >= 60 s, window capped at 8 h);
+  idle/new factories show 0. Follow-up (sim): expose `bottlesPerHour` in `snapshot.factory`. `users.university` follows `setUniversity`.
+- **GET /api/season/leaderboard** `?tab=general|quality|speed|uni&limit=1..100(100)&university|university_id=<name>&season_id`: season default = newest open one.
+  Body = `Leaderboard` of types.ts (+ `seasonId`): value = stars / quality% (0.1) / bottles per hour; `uni` ranks by stars and adds `universities`
+  (sum of stars per university, top 50). Top-100 cached in Redis `lb:{season}:{tab}:{uni}:{bots}` for `LEADERBOARD_CACHE_TTL_S` (20, fail-open, user agnostic);
+  `isMe` and the `me` block (place/value/isMe, `gapTo51`, `inviteCutoff` = value at place 50) are per request (one rank query, ties by user id).
+  Errors: 401, 422 `invalid_tab` / `validation_error`, 404 `season_not_found`, 429 (`leaderboard`), 500.
+- **GET /api/factory/{playerId}** (limit `default`): `{player:{id,name,university?}, factory:{name,level,stars,layout,updatedAt(ms)}}`; layout =
+  `state.sim.layout` (bots: stored layout). 404 `player_not_found` (bad id, no factory, bot while BOTS_ENABLED=0). HttpGameApi fills the private
+  `Factory` fields with neutral values.
+- **GET /api/season/summary** (limit `default`): `SeasonSummary` of types.ts + `seasonId, credits, stars, level, quizResult:null, leadStatus:null`
+  (S5 fills the last two), read from the stored snapshot/columns, no sim call. 404 `factory_not_found`.
+- **snapshot.rank** is overridden with the real general `{place,total}` in every game response and in the stored snapshot (computed in the
+  write transaction with the new stars). `BOTS_ENABLED=0` hides bots from rows, ranks, totals, aggregates and visits.
+- **Bots:** `python -m app.seed_bots [--count 40] [--progress P] [--floor 0.2]` (in compose: `docker compose exec api python -m app.seed_bots`).
+  Idempotent; bot i = user `tg_id = -1000000 - i`, factory `state = {bot:{final,g,quality,speed,lines,lemonade}, sim:{layout}}`; `grow_bots()` is the
+  function for the later growth job (monotonic inside a season, moves bots into a new season).

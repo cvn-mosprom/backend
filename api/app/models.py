@@ -73,6 +73,11 @@ class Factory(Base):
     bottles_season: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
     quality_avg: Mapped[float] = mapped_column(sa.REAL, server_default=text("0"), nullable=False)
     last_tick_at: Mapped[datetime | None] = _tstz()
+    # leaderboard copies (S4): speed = bottles per hour (see game.measure_speed), university = snapshot.player.university,
+    # is_bot = users.is_bot (kept here so board / rank queries need no join to filter bots)
+    speed_bph: Mapped[int] = mapped_column(server_default=text("0"), nullable=False)
+    university: Mapped[str | None] = mapped_column(Text)
+    is_bot: Mapped[bool] = mapped_column(server_default=text("false"), nullable=False)
     # last GameSnapshot returned by the sim; served by GET /api/factory/me in degraded mode (sim down)
     snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
@@ -80,6 +85,8 @@ class Factory(Base):
 
 Index("ix_factories_season_stars", Factory.season_id, Factory.stars.desc())
 Index("ix_factories_season_quality", Factory.season_id, Factory.quality_avg.desc())
+Index("ix_factories_season_speed", Factory.season_id, Factory.speed_bph.desc())
+Index("ix_factories_season_university", Factory.season_id, Factory.university)
 
 
 class Shift(Base):

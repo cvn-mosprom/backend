@@ -28,6 +28,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .errors import AppError
+from .leaderboard import display_name, rank_of
 from .models import Factory, Season, Shift, User
 from .shift import RULE_CODES, RULES, validate_shift
 from .sim_client import SimClient, now_ms
@@ -42,6 +43,7 @@ FEATURES: dict[str, bool] = {"undo": False, "serverOrderEta": False}  # `undo` i
 STATE_WARN_BYTES = 150 * 1024  # spec "not more than 150 KB" (guaranteed only after S1U); bigger writes log state_bytes
 # sim rejection reasons that become the top-level error code; every other reason is 422 command_rejected
 TOP_LEVEL_REASONS = frozenset({"daily_limit_exceeded", "minigame_too_short", "impossible_score"})
+SPEED_WINDOW_MS = 60_000  # min distance between speed baselines (see measure_speed)
 SEASON_LOCK_KEY = 0x4D50_5301  # pg_advisory_xact_lock: serialises creation of the first open season
 
 
@@ -60,8 +62,7 @@ def command_payload(cmd: BaseModel) -> dict[str, Any]:
 
 def player_info(user: User) -> dict[str, Any]:
     """`player` argument of sim /v1/bootstrap (only used when the factory is created)."""
-    name = " ".join(p for p in (user.first_name, user.last_name) if p) or user.username or f"Player {user.tg_id}"
-    info: dict[str, Any] = {"id": str(user.id), "tgId": user.tg_id, "name": name}
+    info: dict[str, Any] = {"id": str(user.id), "tgId": user.tg_id, "name": display_name(user)}
     if user.username:
         info["username"] = user.username
     return info
@@ -81,6 +82,39 @@ def _num(v: Any, default: float = 0) -> float:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else default
 
 
+def _is_num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def measure_speed(snapshot: dict[str, Any], state: dict[str, Any]) -> int | None:
+    """Bottles per hour for `factories.speed_bph` (leaderboard `speed` tab), or None = keep the stored value.
+
+    The sim snapshot does not expose the flow rate (`solveFlow().bottlesPerHour` of the mock), so the rate is derived:
+    `snapshot.factory.bottlesPerHour` when a sim ever provides it, else the measured throughput = d(produced) / d(time)
+    between a baseline kept in `state.meta.speed` ({t, p}) and now. The baseline moves only after >= 60 s, so frequent
+    polling (every few seconds) does not zero the rate; the window is capped at the 8 h offline cap. Follow-up (sim):
+    put `bottlesPerHour` into snapshot.factory to make this exact."""
+    f = snapshot.get("factory")
+    f = f if isinstance(f, dict) else {}
+    if _is_num(f.get("bottlesPerHour")):
+        return max(0, round(f["bottlesPerHour"]))
+    produced, t = f.get("produced"), f.get("lastTick")
+    if not (_is_num(produced) and _is_num(t)):
+        return None
+    meta = state.get("meta")
+    if not isinstance(meta, dict):
+        meta = state["meta"] = {}
+    ref = meta.get("speed")
+    if not (isinstance(ref, dict) and _is_num(ref.get("t")) and _is_num(ref.get("p"))) or produced < ref["p"] or t < ref["t"]:
+        meta["speed"] = {"t": int(t), "p": produced}  # first write / new season (produced went back to 0)
+        return None
+    window = t - ref["t"]
+    if window < SPEED_WINDOW_MS:
+        return None
+    meta["speed"] = {"t": int(t), "p": produced}
+    return max(0, round((produced - ref["p"]) / (min(window, OFFLINE_CAP_H * 3_600_000) / 3_600_000)))
+
+
 def denormalise(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Columns of `factories` derived from a sim snapshot (leaderboard / analytics copies)."""
     f = snapshot.get("factory")
@@ -92,8 +126,12 @@ def denormalise(snapshot: dict[str, Any]) -> dict[str, Any]:
         "level": max(1, int(_num(f.get("level"), 1))),
         "xp": int(_num(f.get("xp"))),
         "bottles_season": int(sum(_num(v) for v in shipped.values())) if isinstance(shipped, dict) else 0,
-        "quality_avg": _num(f.get("quality")),
+        # a factory that produced nothing has "quality 1" in the snapshot: it must not top the quality board
+        "quality_avg": 0.0 if _is_num(f.get("produced")) and f["produced"] <= 0 else _num(f.get("quality")),
     }
+    player = snapshot.get("player")
+    if isinstance(player, dict) and isinstance(player.get("university"), str) and player["university"].strip():
+        out["university"] = player["university"].strip()
     if isinstance(f.get("name"), str) and f["name"]:
         out["name"] = f["name"]
     last_tick = f.get("lastTick")
@@ -191,12 +229,14 @@ class _Locked:
 
 
 class GameService:
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession] | None, redis: Any, sim: SimClient) -> None:
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession] | None, redis: Any, sim: SimClient,
+                 bots_enabled: bool = True) -> None:
         if sessionmaker is None:
             raise AppError("config_error", "DATABASE_URL is not configured")
         self.sm = sessionmaker
         self.redis = redis
         self.sim = sim
+        self.bots_enabled = bots_enabled  # BOTS_ENABLED: demo bots count in snapshot.rank only when True
 
     # ---- db
 
@@ -210,14 +250,29 @@ class GameService:
             raise AppError("factory_not_found", "Factory not found, call GET /api/bootstrap first")
         return _Locked(state=row.state, version=row.version, season_id=row.season_id)
 
-    @staticmethod
-    async def _persist(session: AsyncSession, user_id: int, old_state: dict[str, Any], state: dict[str, Any],
-                       snapshot: dict[str, Any] | None, version: int | None = None) -> None:
+    async def _set_rank(self, session: AsyncSession, season_id: int, user_id: int, snapshot: dict[str, Any],
+                        stars: int | None = None) -> None:
+        """snapshot.rank = the REAL general place / total (the sim's own rank is the mock's fake bot field)."""
+        place, total = await rank_of(session, season_id, user_id, bots_enabled=self.bots_enabled, mine=stars)
+        snapshot["rank"] = {"place": place, "total": total}
+
+    async def _persist(self, session: AsyncSession, user_id: int, season_id: int, old_state: dict[str, Any],
+                       state: dict[str, Any], snapshot: dict[str, Any] | None, version: int | None = None) -> None:
         """State + snapshot + denormalised columns (+ version when a command had an effect), one UPDATE.
-        `snapshot=None` (a rejection decided without a catch-up) writes the state only."""
+        `snapshot=None` (a rejection decided without a catch-up) writes the state only. The snapshot gets the real
+        leaderboard rank (computed with the new stars, before the UPDATE) so the stored copy carries it too."""
         values: dict[str, Any] = {"state": keep_meta(old_state, state), "updated_at": func.now()}
         if snapshot is not None:
-            values.update(denormalise(snapshot), snapshot=snapshot)
+            values.update(denormalise(snapshot))
+            speed = measure_speed(snapshot, state)
+            if speed is not None:
+                values["speed_bph"] = speed
+            await self._set_rank(session, season_id, user_id, snapshot, values["stars"])
+            values["snapshot"] = snapshot
+            old_player = old_state.get("player")
+            old_uni = old_player.get("university") if isinstance(old_player, dict) else None
+            if "university" in values and values["university"] != old_uni:  # setUniversity: users.university follows
+                await session.execute(update(User).where(User.id == user_id).values(university=values["university"]))
         if version is not None:
             values["version"] = version
         size = len(orjson.dumps(values["state"]))
@@ -282,7 +337,8 @@ class GameService:
         async with self.sm() as session, session.begin():
             season_id = await self._ensure_open_season(session, wall)
             await session.execute(  # race-safe create-on-first-call; a rollback below removes the row again
-                pg_insert(Factory).values(user_id=user.id, season_id=season_id, name=player["name"], state={})
+                pg_insert(Factory).values(user_id=user.id, season_id=season_id, name=player["name"], state={},
+                                          is_bot=user.is_bot)
                 .on_conflict_do_nothing(index_elements=[Factory.user_id]))
             locked = await self._lock(session, user.id)
             if locked.state:
@@ -292,7 +348,7 @@ class GameService:
                 now = wall
                 out = await self.sim.bootstrap(None, player, now)  # fresh factory
             state, snapshot = _expect(out, "state", "snapshot")
-            await self._persist(session, user.id, locked.state, state, snapshot)
+            await self._persist(session, user.id, locked.season_id, locked.state, state, snapshot)
             season = (await session.execute(select(Season).where(Season.id == locked.season_id))).scalar_one()
             season_out = {"id": season.id, "startsAt": _ms(season.starts_at), "endsAt": _ms(season.ends_at)}
         features = {**FEATURES, "undo": await self.sim.history_in_state()}  # outside the lock; cached 60 s, fail-closed
@@ -315,10 +371,10 @@ class GameService:
         if entry is not None:  # replay seen in Redis: no lock, no write
             async with self.sm() as session:
                 row = (await session.execute(
-                    select(Factory.state, Factory.version).where(Factory.user_id == user.id))).one_or_none()
+                    select(Factory.state, Factory.version, Factory.season_id).where(Factory.user_id == user.id))).one_or_none()
             if row is None:
                 raise AppError("factory_not_found", "Factory not found, call GET /api/bootstrap first")
-            return await self._replay(entry, row.state, row.version)
+            return await self._replay(user.id, row.season_id, entry, row.state, row.version)
 
         rejected: tuple[str, str] | None = None
         replay: tuple[dict[str, Any], dict[str, Any], int] | None = None
@@ -326,7 +382,7 @@ class GameService:
             locked = await self._lock(session, user.id)
             found = find_entry(locked.state, key)
             if found is not None:  # checked BEFORE the version
-                replay = (found, locked.state, locked.version)
+                replay = (user.id, locked.season_id, found, locked.state, locked.version)
             else:
                 if locked.version != version:
                     raise AppError("version_conflict", "Factory changed since your last sync, refresh and retry",
@@ -335,6 +391,7 @@ class GameService:
                 rule = validate_shift(cmd.get("result")) if cmd.get("type") == "submitShift" else None
                 if rule is not None:  # impossible shift: refused before the sim, recorded like any rejection
                     (snapshot,) = _expect(await self.sim.snapshot(locked.state, now), "snapshot")
+                    await self._set_rank(session, locked.season_id, user.id, snapshot)
                     state = dict(locked.state)  # untouched but for meta.idempotency (added below)
                     result = {"ok": False, "code": rule, "error": RULES[rule][1]}
                 else:
@@ -354,8 +411,8 @@ class GameService:
                     entry = {"key": key, "ok": False, "code": reason, "version": new_version,
                              "result": {"message": message}, "at": now}
                 state = with_idempotency(locked.state, state, entry)
-                await self._persist(session, user.id, locked.state, state, None if rule else snapshot,
-                                    version=new_version if rejected is None else None)
+                await self._persist(session, user.id, locked.season_id, locked.state, state,
+                                    None if rule else snapshot, version=new_version if rejected is None else None)
                 if rejected is None and cmd.get("type") == "submitShift":
                     await self._log_shift(session, user.id, locked.season_id, cmd, state)
         if replay is not None:
@@ -366,10 +423,13 @@ class GameService:
         return {"ok": True, "version": new_version, "result": entry["result"], "events": [],
                 "snapshot": snapshot, "replayed": False}
 
-    async def _replay(self, entry: dict[str, Any], state: dict[str, Any], version: int) -> dict[str, Any]:
+    async def _replay(self, user_id: int, season_id: int, entry: dict[str, Any], state: dict[str, Any],
+                      version: int) -> dict[str, Any]:
         """Stored short result + current version + fresh snapshot (pure sim read, nothing is written)."""
         out = await self.sim.snapshot(state, monotonic_now(state))
         (snapshot,) = _expect(out, "snapshot")
+        async with self.sm() as session:
+            await self._set_rank(session, season_id, user_id, snapshot)
         result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
         if entry.get("ok") is False:
             reason = entry.get("code") if isinstance(entry.get("code"), str) else "rejected"
@@ -385,7 +445,7 @@ class GameService:
             now = monotonic_now(locked.state)
             out = await self.sim.advance(locked.state, now, cap_hours, reason)
             state, snapshot = _expect(out, "state", "snapshot")
-            await self._persist(session, user.id, locked.state, state, snapshot)
+            await self._persist(session, user.id, locked.season_id, locked.state, state, snapshot)
         advanced = out.get("advancedMs")
         return {"version": locked.version, "serverTime": now,
                 "advancedMs": int(_num(advanced)), "snapshot": snapshot}
@@ -399,7 +459,7 @@ class GameService:
                 now = monotonic_now(locked.state)
                 out = await self.sim.advance(locked.state, now, OFFLINE_CAP_H, "resume")
                 state, snapshot = _expect(out, "state", "snapshot")
-                await self._persist(session, user.id, locked.state, state, snapshot)
+                await self._persist(session, user.id, locked.season_id, locked.state, state, snapshot)
             return {"version": locked.version, "serverTime": now, "snapshot": snapshot, "degraded": False}
         except AppError as e:
             if e.code != "sim_unavailable":

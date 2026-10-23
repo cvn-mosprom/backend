@@ -219,12 +219,28 @@ export class HttpGameApi implements GameApi {
 		return run;
 	}
 
+	/** GET /api/season/leaderboard. Same shape as the mock's board(): rows, me, total, inviteCutoff, gapTo51, universities.
+	 *  Errors: 422 invalid_tab, 429 (Retry-After honoured once by sendJson), 401/5xx -> ApiError. */
 	async leaderboard(tab: LeaderboardTab): Promise<Leaderboard> {
 		return this.getJson<Leaderboard>('/api/season/leaderboard', { tab });
 	}
 
+	/** GET /api/factory/:id: the PUBLIC cut {player, factory:{name, level, stars, layout, updatedAt}}. The frontend's
+	 *  Factory type also wants the private fields; they are filled with neutral values (the mock did the same for bots:
+	 *  credits 0, xp 0, nothing shipped). 404 player_not_found -> ApiError(404). */
 	async visit(playerId: string): Promise<{ player: Pick<Player, 'id' | 'name' | 'university'>; factory: Factory }> {
-		return this.getJson(`/api/factory/${encodeURIComponent(playerId)}`);
+		const v = await this.getJson<{
+			player: Pick<Player, 'id' | 'name' | 'university'>;
+			factory: { name: string; level: number; stars: number; layout: Factory['layout']; updatedAt: number };
+		}>(`/api/factory/${encodeURIComponent(playerId)}`);
+		const f = v.factory;
+		return {
+			player: v.player,
+			factory: {
+				name: f.name, layout: f.layout, level: f.level, stars: f.stars, credits: 0, xp: 0,
+				shipped: {}, collection: {}, rejected: 0, lastTick: f.updatedAt
+			}
+		};
 	}
 
 	async seasonSummary(): Promise<SeasonSummary> {

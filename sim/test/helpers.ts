@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import type { Command } from '$lib/api/types';
+import { BUILDINGS } from '$lib/content/buildings';
 import { TUTORIAL_LINKS, TUTORIAL_PIPE, TUTORIAL_ROW, TUTORIAL_SPOTS } from '$lib/content/tutorial';
 import { bootstrap, command } from '../src/engine';
 import type { StateObject } from '../src/host';
@@ -52,3 +53,18 @@ export async function buildTutorialLine(state: StateObject, now: number): Promis
 
 export const pickExtras = (s: StateObject) => ({ meta: s.meta, futureTop: s.futureTop });
 export const withExtras = (s: StateObject): StateObject => ({ ...s, ...structuredClone(EXTRAS) });
+
+/** The `filler` of the tutorial line (profession `operator`) and a plausible winning minigame result for it. */
+export function shiftCmd(state: StateObject, over: Record<string, unknown> = {}, buildingId?: string): Command {
+	const layout = (state as { sim: { layout: { buildings: { id: string; kind: keyof typeof BUILDINGS; wear: number }[] } } }).sim.layout;
+	const filler = layout.buildings.find((q) => q.kind === 'filler')!;
+	const b = buildingId ? { ...filler, id: buildingId } : filler; // an unknown id keeps the filler's profession
+	const profession = b.wear >= 1 ? 'adjuster' : BUILDINGS[b.kind].profession!;
+	return {
+		type: 'submitShift',
+		buildingId: b.id,
+		result: { gameId: 'g1', profession, result: 'win', score: 0.8, durationMs: 5000, difficulty: 1, metrics: {}, ...over }
+	} as Command;
+}
+
+export const season = (s: StateObject) => (s as unknown as { season: { shiftsLeft: number; shiftsDay: string } }).season;

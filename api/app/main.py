@@ -11,7 +11,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from .db import make_engine, make_redis, make_sessionmaker
 from .errors import install_error_handlers
 from .middleware import RequestContextMiddleware, setup_logging
-from .routes import health, me
+from .routes import game, health, me
 from .settings import Settings, get_settings
 from .sim_client import SimClient
 
@@ -52,4 +52,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(me.router)
+    app.include_router(game.router)
     return app

@@ -131,3 +131,23 @@ async def live(make_client, clean_db, clean_redis):
     client.db = clean_db  # type: ignore[attr-defined]
     client.redis = clean_redis  # type: ignore[attr-defined]
     return client
+
+
+# ---------------------------------------------------------------- game endpoints (fake sim)
+
+@pytest.fixture
+def fake_sim():
+    from tests.fake_sim import FakeSim
+    return FakeSim()
+
+
+@pytest_asyncio.fixture
+async def game(make_client, clean_db, clean_redis, fake_sim):
+    """Client on the throwaway Postgres + Redis with the in-process fake sim and the rate limiter OFF.
+    `.db` asyncpg connection, `.redis`, `.sim` the FakeSim."""
+    client = await make_client(sim=fake_sim.client(), database_url=TEST_DB_URL, redis_url=TEST_REDIS_URL,
+                               rate_limit_enabled=False)
+    client.db = clean_db  # type: ignore[attr-defined]
+    client.redis = clean_redis  # type: ignore[attr-defined]
+    client.sim = fake_sim  # type: ignore[attr-defined]
+    return client

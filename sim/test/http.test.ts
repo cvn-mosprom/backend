@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 import { createSimServer } from '../src/app';
 import { BODY_LIMIT_BYTES } from '../src/http';
-import { EXTRAS, H, PLAYER, T0, buildTutorialLine, newFactory, pickExtras, tutorialCommands } from './helpers';
+import { EXTRAS, H, PLAYER, T0, buildTutorialLine, newFactory, pickExtras, shiftCmd, tutorialCommands } from './helpers';
 
 type J = Record<string, any>;
 
@@ -87,11 +87,25 @@ describe('POST /v1/command', () => {
 		assert.equal(typeof r.json.result.error, 'string');
 		assert.equal(r.json.state.factoryName, 'Мой цех');
 	});
+	it('a rejection carries the original message and a reason code; submitShift limit/anti-cheat codes', async () => {
+		const built = await buildTutorialLine(await newFactory(), T0);
+		const r = await post('/v1/command', { state: built.state, now: built.now + 1000, cmd: { type: 'renameFactory', name: 'x' } });
+		assert.deepEqual(r.json.result, { ok: false, error: 'Название от 2 символов', code: 'rejected' });
+		const short = await post('/v1/command', { state: built.state, now: built.now + 1000, cmd: shiftCmd(built.state, { durationMs: 100 }) });
+		assert.equal(short.json.result.code, 'minigame_too_short');
+		let state = built.state;
+		for (let i = 1; i <= 6; i++) {
+			const s = await post('/v1/command', { state, now: built.now + i * 1000, cmd: shiftCmd(state) });
+			assert.equal(s.json.result.ok, i <= 5, String(i));
+			if (i === 6) assert.equal(s.json.result.code, 'daily_limit_exceeded');
+			state = s.json.state;
+		}
+	});
 	it('tick is rejected with tick_removed', async () => {
 		const { json: b } = await post('/v1/bootstrap', bootstrapBody());
 		const r = await post('/v1/command', { state: b.state, now: T0 + 1000, cmd: { type: 'tick', from: T0, to: T0 + 500, events: [] } });
 		assert.equal(r.status, 200);
-		assert.deepEqual(r.json.result, { ok: false, error: 'tick_removed' });
+		assert.deepEqual(r.json.result, { ok: false, error: 'tick_removed', code: 'tick_removed' });
 		assert.deepEqual(r.json.state, b.state);
 	});
 	it('meta survives every kind of command outcome', async () => {
@@ -133,6 +147,16 @@ describe('POST /v1/advance', () => {
 		assert.equal(r.json.state.lastTick, built.now + 3 * H);
 		assert.ok(r.json.snapshot.factory.produced > 0);
 		assert.deepEqual(pickExtras(r.json.state), EXTRAS);
+	});
+	it('reason=background keeps the unseen offline report (accumulates); other reasons replace it', async () => {
+		const built = await buildTutorialLine(await newFactory(), T0);
+		const a = await post('/v1/advance', { state: built.state, now: built.now + 1 * H, reason: 'resume' });
+		const bg = await post('/v1/advance', { state: a.json.state, now: built.now + 1.5 * H, reason: 'background' });
+		const manual = await post('/v1/advance', { state: a.json.state, now: built.now + 1.5 * H, reason: 'manual' });
+		assert.equal(bg.json.snapshot.offline.hours, 1.5);
+		assert.equal(manual.json.snapshot.offline.hours, 0.5);
+		assert.ok(bg.json.snapshot.offline.producedBottles > manual.json.snapshot.offline.producedBottles);
+		assert.deepEqual(bg.json.state.offline, bg.json.snapshot.offline);
 	});
 	it('capHours is honoured', async () => {
 		const built = await buildTutorialLine(await newFactory(), T0);

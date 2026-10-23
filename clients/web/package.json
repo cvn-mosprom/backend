@@ -1,0 +1,13 @@
+{
+  "name": "mosprom-http-game-api",
+  "private": true,
+  "version": "0.1.0",
+  "description": "HttpGameApi: drop-in GameApi implementation over the mosprom HTTP API (copy into web/src/lib/api/)",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

@@ -73,6 +73,8 @@ class Factory(Base):
     bottles_season: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
     quality_avg: Mapped[float] = mapped_column(sa.REAL, server_default=text("0"), nullable=False)
     last_tick_at: Mapped[datetime | None] = _tstz()
+    # last GameSnapshot returned by the sim; served by GET /api/factory/me in degraded mode (sim down)
+    snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
 
 

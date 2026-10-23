@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Command } from '$lib/api/types';
-import { COMMAND_TYPES, bootstrap, catchUp, command, snapshot, type PlayerInfo } from './engine';
+import { COMMAND_TYPES, advance, bootstrap, command, snapshot, type PlayerInfo } from './engine';
 import type { StateObject } from './host';
 
 export const BODY_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -116,7 +116,7 @@ const routes: Record<string, Handler> = {
 			capHours = b.capHours;
 		}
 		if (b.reason !== undefined && b.reason !== null && typeof b.reason !== 'string') throw bad('reason must be a string');
-		const r = await catchUp(state, now, capHours);
+		const r = await advance(state, now, { capHours, reason: typeof b.reason === 'string' ? b.reason : undefined });
 		return { state: r.state, snapshot: r.snapshot, advancedMs: r.advancedMs };
 	},
 

@@ -5,6 +5,7 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 ## Done
 - Repo scaffold, frontend pinned as submodule vendor/frontend (dde6cbf).
 - S0 done: compose (caddy api db migrate redis sim bot + pgbouncer/sim-replicas profiles), health/ready, initData + dev auth, errors, request id, JSON logs, Redis rate limiter, generated contract (28 cmds), sim service. Tests: api 125, sim 55, contract 212, bot 19.
+- S2 done: GET /api/bootstrap, POST /api/command (row lock, 409, idempotency deque in state.meta + Redis), POST /api/advance, GET /api/factory/me (degraded), buildEnd no-op, sim reason codes, shift limit in state + max(now,lastTick) guard, background offline report accumulation, clients/web/HttpGameApi.ts, e2e S2 acceptance (9/9). Tests: api 257 (with SIM_URL), sim 86, contract 212, e2e 9.
 
 ## In progress
 - (none)
@@ -18,4 +19,4 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - Command after >8 h gap: sim runs capped bootstrap first, then the command.
 
 ## Next
-- S2 backend core: bootstrap, command, advance, factory/me, idempotency, shifts_left in state, HttpGameApi notes.
+- S3: submitShift validation (400 ms..60 s, score, metrics), undo/redo dispatch -> history_unavailable until S1U, state size audit (after S1U).

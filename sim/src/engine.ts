@@ -7,6 +7,7 @@ import { advance as advanceSim } from '$lib/sim/advance';
 import type { SimState } from '$lib/sim/economy';
 import type { MockGameApi } from '$lib/api/mock/MockGameApi';
 import { withMock, type StateObject } from './host';
+import { rejectionCode, type RejectionReason } from './reasons';
 
 const H = 3600_000;
 
@@ -19,9 +20,23 @@ export interface PlayerInfo {
 
 export interface CommandOutcome {
 	ok: boolean;
+	/** Rejections only: the mock's original (Russian) message. */
 	error?: string;
+	/** Rejections only: stable machine reason (reasons.ts). */
+	code?: RejectionReason;
 	toast?: string;
 	rewards?: { credits?: number; stars?: number; xp?: number; unlocked?: string[] };
+}
+
+/** The unseen offline report kept in `state.offline` (api/types.ts OfflineReport). */
+interface OfflineReport {
+	hours: number;
+	capped: boolean;
+	producedBottles: number;
+	producedBoxes: Record<string, number>;
+	creditsSpent: number;
+	broken: string[];
+	storageFull: boolean;
 }
 
 /** The slice of MockState the engine reads or patches; everything else is opaque. */
@@ -30,9 +45,18 @@ interface StateView {
 	prodAt?: number;
 	sim: SimState;
 	season: { endsAt: number };
-	offline?: { hours: number; capped: boolean };
+	offline?: OfflineReport;
 }
 const view = (s: StateObject) => s as unknown as StateView;
+
+/**
+ * Effective server time of a request: `max(now, state.lastTick)`. Applied by EVERY entry point (snapshot, bootstrap,
+ * command, advance). The factory clock never runs backwards: a request stamped before `lastTick` is served as if it
+ * arrived at `lastTick`. Without it the mock's day roll (`shiftsDay !== mskDay(now)` -> `shiftsLeft = 5`) would hand out
+ * fresh shifts every time the caller's clock crosses MSK midnight in the wrong direction. The shift counter itself lives
+ * in the persisted state (`season.shiftsLeft` / `season.shiftsDay`), so this guard is all the limit needs.
+ */
+export const effectiveNow = (s: StateObject, now: number): number => Math.max(now, view(s).lastTick);
 
 /** Server moment up to which the factory has been accounted: `min(prodAt ?? lastTick, lastTick)` (MockGameApi.tick). */
 export const accountedTo = (s: StateObject): number => {
@@ -41,7 +65,7 @@ export const accountedTo = (s: StateObject): number => {
 };
 
 /** Commands that exist in the `Command` union but are not served by the sim. */
-const REJECTED_COMMANDS: Record<string, string> = {
+const REJECTED_COMMANDS: Record<string, RejectionReason> = {
 	// `tick` (client discrete simulation) is removed from the contract; the server is purely analytic.
 	tick: 'tick_removed',
 	// Undo history lives in MockGameApi.hist (memory only) and cannot survive between stateless requests until it is
@@ -52,7 +76,7 @@ const REJECTED_COMMANDS: Record<string, string> = {
 
 /** Pure read of the snapshot at `now`: no catch-up, nothing persisted. */
 export async function snapshot(state: StateObject, now: number): Promise<GameSnapshot> {
-	const { value } = await withMock(state, now, (mock) => (mock as unknown as { snap(): GameSnapshot }).snap());
+	const { value } = await withMock(state, effectiveNow(state, now), (mock) => (mock as unknown as { snap(): GameSnapshot }).snap());
 	return value;
 }
 
@@ -95,6 +119,7 @@ export async function catchUp(
 	now: number,
 	capHours: number = OFFLINE_CAP_H
 ): Promise<{ state: StateObject; snapshot: GameSnapshot; advancedMs: number }> {
+	now = effectiveNow(state, now);
 	const from = accountedTo(state);
 	const advancedMs = Math.max(0, now - from);
 	const cap = Number.isFinite(capHours) ? Math.min(Math.max(capHours, 0), OFFLINE_CAP_H) : OFFLINE_CAP_H;
@@ -133,14 +158,60 @@ export async function catchUp(
 	return { state: out, snapshot: value, advancedMs };
 }
 
+/** Why the caller advances the factory (`/v1/advance` `reason`). Anything but `background` behaves like the mock. */
+export type AdvanceReason = 'resume' | 'manual' | 'background';
+
+/**
+ * Fold a new offline report into the unseen one. Used when the player has not looked at the previous report yet, so the
+ * summary still covers the whole absence: hours summed (capped at OFFLINE_CAP_H, `capped` set when the cap is hit or either
+ * part was capped), produced bottles / boxes / spent credits summed, `broken` merged without duplicates, `storageFull` OR-ed.
+ */
+export function mergeOffline(prev: OfflineReport, cur: OfflineReport): OfflineReport {
+	const hours = (prev.hours || 0) + (cur.hours || 0);
+	const boxes: Record<string, number> = { ...prev.producedBoxes };
+	for (const [sku, n] of Object.entries(cur.producedBoxes ?? {})) boxes[sku] = (boxes[sku] ?? 0) + n;
+	return {
+		hours: Math.min(hours, OFFLINE_CAP_H),
+		capped: !!prev.capped || !!cur.capped || hours > OFFLINE_CAP_H,
+		producedBottles: (prev.producedBottles || 0) + (cur.producedBottles || 0),
+		producedBoxes: boxes,
+		creditsSpent: (prev.creditsSpent || 0) + (cur.creditsSpent || 0),
+		broken: [...new Set([...(prev.broken ?? []), ...(cur.broken ?? [])])],
+		storageFull: !!prev.storageFull || !!cur.storageFull
+	};
+}
+
+/**
+ * `/v1/advance`: `catchUp` plus the report policy of `reason`.
+ * - `background` (a lazy catch-up while the player is away): an unseen `state.offline` is never replaced by a smaller one,
+ *   the report of this step is merged into it (`mergeOffline`). The step runs from a state without the old report so a
+ *   report produced by the step itself can be told apart; without a new one the old report is put back untouched.
+ * - `resume` / `manual` / absent: plain catch-up (a new report replaces the old one, as in the mock).
+ */
+export async function advance(
+	state: StateObject,
+	now: number,
+	opts: { capHours?: number; reason?: AdvanceReason | string } = {}
+): Promise<{ state: StateObject; snapshot: GameSnapshot; advancedMs: number }> {
+	const prev = view(state).offline;
+	if (opts.reason !== 'background' || !prev) return catchUp(state, now, opts.capHours);
+	const clean: StateObject = { ...state };
+	delete clean.offline;
+	const r = await catchUp(clean, now, opts.capHours);
+	const out = view(r.state);
+	out.offline = out.offline ? mergeOffline(prev, out.offline) : prev;
+	return { ...r, snapshot: { ...r.snapshot, offline: out.offline as GameSnapshot['offline'] } };
+}
+
 /** Apply a player command (MockGameApi.command: lazy catch-up, apply, level-up). */
 export async function command(
 	state: StateObject,
 	now: number,
 	cmd: Command
 ): Promise<{ state: StateObject; result: CommandOutcome; snapshot: GameSnapshot }> {
+	now = effectiveNow(state, now);
 	const reason = Object.hasOwn(REJECTED_COMMANDS, cmd.type) ? REJECTED_COMMANDS[cmd.type] : undefined;
-	if (reason) return { state, result: { ok: false, error: reason }, snapshot: await snapshot(state, now) };
+	if (reason) return { state, result: { ok: false, error: reason, code: reason }, snapshot: await snapshot(state, now) };
 
 	// The mock's command() catches up with tick(false), which is NOT capped (it is meant for a client that was just
 	// bootstrapped). A command arriving after a long idle gap must not turn into an uncapped offline catch-up, so a
@@ -150,7 +221,9 @@ export async function command(
 
 	const { value, state: out } = await withMock(s, now, (mock: MockGameApi) => mock.command(cmd));
 	const { snapshot: snap, ...result } = value as CommandResult & { snapshot?: GameSnapshot };
-	return { state: out, result: result as CommandOutcome, snapshot: snap as GameSnapshot };
+	const outcome = result as CommandOutcome;
+	if (!outcome.ok) outcome.code = rejectionCode(outcome.error, cmd);
+	return { state: out, result: outcome, snapshot: snap as GameSnapshot };
 }
 
 /** Commands the sim understands (the `Command` union; `tick` is listed so it can be answered with `tick_removed`). */

@@ -93,7 +93,7 @@ describe('command', () => {
 		const st0 = withExtras(await newFactory());
 		const before = structuredClone(st0);
 		const r = await command(st0, T0 + 3 * H, { type: 'tick', from: T0, to: T0 + 1000, events: [] });
-		assert.deepEqual(r.result, { ok: false, error: 'tick_removed' });
+		assert.deepEqual(r.result, { ok: false, error: 'tick_removed', code: 'tick_removed' });
 		assert.deepEqual(r.state, before, 'no catch-up on a removed command');
 		assert.equal(r.snapshot.serverTime, T0 + 3 * H);
 	});
@@ -102,7 +102,7 @@ describe('command', () => {
 		const st0 = await newFactory();
 		for (const type of ['undo', 'redo'] as const) {
 			const r = await command(st0, T0 + 1000, { type });
-			assert.deepEqual(r.result, { ok: false, error: 'history_unavailable' });
+			assert.deepEqual(r.result, { ok: false, error: 'history_unavailable', code: 'history_unavailable' });
 		}
 	});
 

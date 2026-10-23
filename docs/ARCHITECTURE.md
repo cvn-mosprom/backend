@@ -71,3 +71,37 @@ Snapshot shape = `GameSnapshot` from `vendor/frontend/web/src/lib/api/types.ts`.
 caddy 80/443, api 8000 (internal), sim 8080 (internal), db published on 127.0.0.1:55432, redis on 127.0.0.1:56379.
 API tests use a throwaway Postgres/Redis: `TEST_DATABASE_URL` (default postgresql+asyncpg://mosprom:mosprom@127.0.0.1:55433/mosprom_test)
 and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
+
+## S2 decisions (game endpoints)
+
+- **Version** (`factories.version`) increments only on a successful player command with effect. Lazy catch-up (bootstrap,
+  factory/me, advance, background top-200, and the catch-up part of a rejected command) persists state but does NOT bump the
+  version, so passive sync in one tab never causes 409 in another tab. `version_conflict` comes only from POST /api/command.
+- **Time:** API sends the sim `now = max(server_now_ms, state.lastTick)` (monotonic per factory).
+- **Sim rejection codes:** sim `/v1/command` returns `result = {ok:false, error:<ru message>, code:<reason>}`. Reasons:
+  `daily_limit_exceeded`, `minigame_too_short`, `impossible_score`, `history_unavailable`, `tick_removed`, `season_closed`,
+  `insufficient_funds`, `not_found`, `rejected` (generic fallback). API mapping: reasons `daily_limit_exceeded`,
+  `minigame_too_short`, `impossible_score` become the top-level error code (422); everything else is 422 `command_rejected`
+  with `details.reason`. Details always include `message`, `version` and the fresh `snapshot`.
+- **POST /api/command** body `{version:int, idempotency_key:str(8..64), cmd:Command}`; success 200
+  `{ok:true, version, result:{toast?, rewards?}, events:[], snapshot, replayed:false}`.
+  Replay (same key): 200 with the stored short result, current version, fresh snapshot, `replayed:true` — checked BEFORE the
+  version check. Keys live in `state.meta.idempotency` (deque, last 50: `{key, ok, code?, version, result, at}`), written in the
+  same transaction as the state; Redis `idem:{user_id}:{key}` TTL 600 s is only a fast-path cache.
+  Rejected commands are also recorded (a replay returns the same rejection).
+- **buildEnd:** auth + rate limit, read version without lock, 200 `{ok:true, version, result:{}, events:[], snapshot:null, replayed:false}`; no write, no idempotency.
+- **tick / undo / redo:** rejected by sim (`tick_removed`, `history_unavailable`) -> 422 command_rejected.
+- **GET /api/bootstrap:** creates factory on first call (INSERT .. ON CONFLICT DO NOTHING, then SELECT .. FOR UPDATE), ensures an
+  open season row exists (creates season 1 if none; rotation is S4), catch-up with 8 h cap, returns
+  `{version, serverTime, season:{id, startsAt, endsAt}, features:{undo:false, serverOrderEta:false}, snapshot}`.
+- **GET /api/factory/me:** catch-up under lock, `{version, serverTime, snapshot, degraded:false}`; sim down -> last stored snapshot
+  (`factories.snapshot` JSONB column) with `degraded:true` (200).
+- **POST /api/advance** body `{cap_hours: 0..8 (default 8), reason: "resume"|"manual"|"background"}` -> `{version, serverTime, advancedMs, snapshot}`.
+- **Shift limit:** the counter lives in the factory state (`state.season.shiftsLeft/shiftsDay` of the persisted MockState — part of
+  factories.state, decremented inside the same sim command and the same DB transaction). No Redis counter. Server season
+  bounds (seasons table) are aligned in S4.
+- Denormalised columns (credits, stars, level, xp, bottles_season, quality_avg, last_tick_at, updated_at) and `snapshot` are
+  refreshed from the sim snapshot on every write.
+- **Sim (implemented in S2):** rejections carry `result.code` (table: `sim/src/reasons.ts`); `/v1/advance` accepts `reason`, and
+  `background` accumulates into an unseen offline report instead of replacing it; the sim itself enforces
+  `effectiveNow = max(now, state.lastTick)` on every endpoint.

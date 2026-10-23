@@ -1,0 +1,27 @@
+{
+  "name": "mosprom-sim",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Server-side game simulation service: runs vendor/frontend web/src/lib (MockGameApi) behind a stateless HTTP API",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "build": "node build.mjs",
+    "start:dist": "node dist/server.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm run build && npm run test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.20.6",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "mosprom-contract",
+  "private": true,
+  "version": "0.1.0",
+  "description": "JSON Schema + Pydantic generation from vendor/frontend web/src/lib/api/types.ts",
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.mjs",
+    "check": "node generate.mjs --check"
+  },
+  "devDependencies": {
+    "ts-json-schema-generator": "2.9.0",
+    "typescript": "5.9.3"
+  }
+}

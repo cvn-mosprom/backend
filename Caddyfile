@@ -1,0 +1,36 @@
+# Caddy terminates TLS (automatic HTTPS via Let's Encrypt for a real DOMAIN) and proxies the API.
+#
+#   DOMAIN=game.example.com   public domain: ports 80/443 must reach this host, DNS A record must point here
+#   DOMAIN=localhost          local dev: Caddy issues a cert from its own internal CA (curl -k https://localhost/health)
+#   DOMAIN=http://localhost   plain HTTP, no TLS at all (handy for curl / tunnels that terminate TLS themselves)
+#
+# The Mini App only opens in Telegram over HTTPS on a real domain; a tunnel is the last-resort fallback.
+
+{$DOMAIN:localhost} {
+	encode zstd gzip
+
+	# one JSON access line per request on stdout (the bot's 5xx alert can read these)
+	log {
+		output stdout
+		format json
+	}
+
+	@api path /api/* /health /ready
+	handle @api {
+		request_body {
+			max_size 2MB
+		}
+		reverse_proxy api:8000 {
+			# api -> caddy -> client: fail fast instead of hanging a request slot
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	# The Mini App web build is not served from this stack (yet).
+	handle {
+		respond "mosprom api" 404
+	}
+}

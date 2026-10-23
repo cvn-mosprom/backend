@@ -1,0 +1,169 @@
+{
+  "serverTime": 1761253200000,
+  "undoSteps": 3,
+  "redoSteps": 1,
+  "undoLabel": "лента",
+  "redoLabel": "улучшение",
+  "player": {
+    "id": "u_1",
+    "tgId": 777000111,
+    "name": "Ivan",
+    "username": "ivan_k",
+    "university": "МГТУ им. Баумана",
+    "source": "hr_spring",
+    "ageConfirmed": true,
+    "createdAt": 1761000000000
+  },
+  "factory": {
+    "name": "Цех Кваса №1",
+    "layout": {
+      "hangar": {
+        "w": 24,
+        "h": 14,
+        "gates": [
+          { "id": "g1", "side": "W", "offset": 3 },
+          { "id": "g2", "side": "E", "offset": 9 }
+        ],
+        "pillars": [{ "x": 8, "y": 6 }, { "x": 15, "y": 6 }],
+        "paint": [{ "x": 1, "y": 1, "color": "yellow" }]
+      },
+      "buildings": [
+        {
+          "id": "b1",
+          "kind": "brew_tank",
+          "x": 4,
+          "y": 3,
+          "rot": 0,
+          "level": 2,
+          "wear": 0.12,
+          "config": { "fluid": "kvas" },
+          "boost": { "mult": 1.2, "until": 1761256800000 },
+          "builtAt": 1761001000000
+        },
+        {
+          "id": "b2",
+          "kind": "storage",
+          "x": 16,
+          "y": 8,
+          "rot": 2,
+          "level": 1,
+          "wear": 0,
+          "stock": { "kvas_ochakovsky_15": 24 },
+          "builtAt": 1761002000000
+        },
+        {
+          "id": "b3",
+          "kind": "dock",
+          "x": 20,
+          "y": 9,
+          "rot": 0,
+          "level": 1,
+          "wear": 0.4,
+          "builtAt": 1761003000000
+        }
+      ],
+      "conveyors": [
+        { "x": 8, "y": 4, "kind": "pipe", "dir": "E", "level": 1 },
+        { "x": 9, "y": 4, "kind": "belt", "dir": "S", "level": 2 }
+      ]
+    },
+    "credits": 5230,
+    "stars": 14,
+    "xp": 480,
+    "level": 3,
+    "shipped": { "kvas_ochakovsky_15": 600, "lemonade_tarhun_15": 120 },
+    "collection": { "kvas_ochakovsky_15": 1761010000000 },
+    "rejected": 12,
+    "lastTick": 1761253200000,
+    "simAt": 1761253200000,
+    "stock": { "kvas_ochakovsky_15": { "boxes": 24, "pallets": 1, "defect": 0.03 } },
+    "warehouse": { "cap": 200, "used": 25 },
+    "produced": 900,
+    "quality": 0.97,
+    "lastShipped": { "kvas_ochakovsky_15": 1761250000000 },
+    "referrals": 2,
+    "loan": { "principal": 1000, "fee": 100, "left": 700, "takenAt": 1761200000000, "overdueApplied": false },
+    "loanLog": [{ "t": 1761220000000, "amount": 400, "source": "order", "left": 700 }]
+  },
+  "orders": [
+    {
+      "id": "o1761253200_0_123456",
+      "client": "Магазин у дома",
+      "clientKind": "shop",
+      "sku": "kvas_ochakovsky_15",
+      "qty": 20,
+      "unit": "box",
+      "minQuality": 0.9,
+      "rewardCredits": 800,
+      "rewardStars": 2,
+      "rewardXp": 40,
+      "deadline": 1761339600000,
+      "status": "accepted",
+      "loaded": 5,
+      "dockId": "b3",
+      "hours": 24,
+      "acceptedAt": 1761253000000,
+      "defect": 0.02,
+      "tutorial": false
+    },
+    {
+      "id": "o1761253200_1_654321",
+      "client": "Кафе «Лето»",
+      "clientKind": "cafe",
+      "sku": "lemonade_tarhun_15",
+      "qty": 2,
+      "unit": "pallet",
+      "minQuality": 0.8,
+      "rewardCredits": 1500,
+      "rewardStars": 3,
+      "rewardXp": 70,
+      "deadline": 1761260400000,
+      "status": "available",
+      "loaded": 0
+    }
+  ],
+  "event": {
+    "id": "ev_heat",
+    "title": "Жара",
+    "text": "Квас нарасхват",
+    "until": 1761300000000,
+    "effects": { "sku": "kvas_all", "priceMult": 1.3, "starsMult": 1.1, "minQuality": 0.85 }
+  },
+  "season": {
+    "id": 1,
+    "startsAt": 1761000000000,
+    "endsAt": 1763592000000,
+    "shiftsLeft": 4,
+    "shiftsPerDay": 5,
+    "dayIndex": 3,
+    "days": 30,
+    "closed": false
+  },
+  "skills": {
+    "speed": 12,
+    "accuracy": 30,
+    "attention": 18,
+    "endurance": 7,
+    "byProfession": {
+      "kvasovar": { "played": 3, "wins": 2, "avgScore": 0.7 },
+      "forklift": { "played": 1, "wins": 0, "avgScore": 0.2 }
+    }
+  },
+  "dialogs": {
+    "done": ["q_intro", "q_brew"],
+    "active": "q_bottles",
+    "lastHintAt": 1761250000000,
+    "factsSeen": ["f1978"]
+  },
+  "offline": {
+    "hours": 3.5,
+    "capped": false,
+    "producedBottles": 480,
+    "producedBoxes": { "kvas_ochakovsky_15": 40 },
+    "creditsSpent": 120,
+    "broken": ["b3"],
+    "storageFull": false
+  },
+  "rank": { "place": 17, "total": 230 },
+  "loanLimit": 3000
+}

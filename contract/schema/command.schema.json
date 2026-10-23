@@ -1,0 +1,1155 @@
+{
+  "$ref": "#/definitions/Command",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AcceptOrderCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "dockId": {
+          "type": "string"
+        },
+        "orderId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "acceptOrder",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "orderId",
+        "dockId"
+      ],
+      "type": "object"
+    },
+    "AgeConfirmCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "ageConfirm",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "BuildEndCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "buildEnd",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "BuildingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container"
+        },
+        "fluid": {
+          "$ref": "#/definitions/FluidKind"
+        }
+      },
+      "type": "object"
+    },
+    "BuildingKind": {
+      "enum": [
+        "splitter",
+        "merger",
+        "crossing",
+        "pipe_tee",
+        "pipe_merge",
+        "intake",
+        "blow",
+        "brew_tank",
+        "syrup",
+        "saturator",
+        "filler",
+        "capper",
+        "labeler",
+        "qc",
+        "packer",
+        "palletizer",
+        "storage",
+        "dock",
+        "lab",
+        "rest",
+        "can_depal",
+        "can_filler",
+        "seamer"
+      ],
+      "type": "string"
+    },
+    "CancelOrderCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "orderId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "cancelOrder",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "orderId"
+      ],
+      "type": "object"
+    },
+    "Cell": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "type": "object"
+    },
+    "Command": {
+      "discriminator": {
+        "mapping": {
+          "acceptOrder": "#/definitions/AcceptOrderCommand",
+          "ageConfirm": "#/definitions/AgeConfirmCommand",
+          "buildEnd": "#/definitions/BuildEndCommand",
+          "cancelOrder": "#/definitions/CancelOrderCommand",
+          "configure": "#/definitions/ConfigureCommand",
+          "dialogDone": "#/definitions/DialogDoneCommand",
+          "expandHangar": "#/definitions/ExpandHangarCommand",
+          "factSeen": "#/definitions/FactSeenCommand",
+          "move": "#/definitions/MoveCommand",
+          "offlineSeen": "#/definitions/OfflineSeenCommand",
+          "paint": "#/definitions/PaintCommand",
+          "place": "#/definitions/PlaceCommand",
+          "placeConveyor": "#/definitions/PlaceConveyorCommand",
+          "redo": "#/definitions/RedoCommand",
+          "remove": "#/definitions/RemoveCommand",
+          "renameFactory": "#/definitions/RenameFactoryCommand",
+          "repair": "#/definitions/RepairCommand",
+          "repayLoan": "#/definitions/RepayLoanCommand",
+          "rerouteConveyor": "#/definitions/RerouteConveyorCommand",
+          "rotate": "#/definitions/RotateCommand",
+          "sellMarket": "#/definitions/SellMarketCommand",
+          "setUniversity": "#/definitions/SetUniversityCommand",
+          "submitShift": "#/definitions/SubmitShiftCommand",
+          "takeLoan": "#/definitions/TakeLoanCommand",
+          "tick": "#/definitions/TickCommand",
+          "undo": "#/definitions/UndoCommand",
+          "upgrade": "#/definitions/UpgradeCommand",
+          "upgradeConveyor": "#/definitions/UpgradeConveyorCommand"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/definitions/AgeConfirmCommand"
+        },
+        {
+          "$ref": "#/definitions/RenameFactoryCommand"
+        },
+        {
+          "$ref": "#/definitions/SetUniversityCommand"
+        },
+        {
+          "$ref": "#/definitions/PlaceCommand"
+        },
+        {
+          "$ref": "#/definitions/PlaceConveyorCommand"
+        },
+        {
+          "$ref": "#/definitions/RerouteConveyorCommand"
+        },
+        {
+          "$ref": "#/definitions/RemoveCommand"
+        },
+        {
+          "$ref": "#/definitions/MoveCommand"
+        },
+        {
+          "$ref": "#/definitions/RotateCommand"
+        },
+        {
+          "$ref": "#/definitions/ConfigureCommand"
+        },
+        {
+          "$ref": "#/definitions/UpgradeCommand"
+        },
+        {
+          "$ref": "#/definitions/UpgradeConveyorCommand"
+        },
+        {
+          "$ref": "#/definitions/RepairCommand"
+        },
+        {
+          "$ref": "#/definitions/ExpandHangarCommand"
+        },
+        {
+          "$ref": "#/definitions/PaintCommand"
+        },
+        {
+          "$ref": "#/definitions/AcceptOrderCommand"
+        },
+        {
+          "$ref": "#/definitions/CancelOrderCommand"
+        },
+        {
+          "$ref": "#/definitions/SellMarketCommand"
+        },
+        {
+          "$ref": "#/definitions/TakeLoanCommand"
+        },
+        {
+          "$ref": "#/definitions/RepayLoanCommand"
+        },
+        {
+          "$ref": "#/definitions/SubmitShiftCommand"
+        },
+        {
+          "$ref": "#/definitions/DialogDoneCommand"
+        },
+        {
+          "$ref": "#/definitions/FactSeenCommand"
+        },
+        {
+          "$ref": "#/definitions/UndoCommand"
+        },
+        {
+          "$ref": "#/definitions/RedoCommand"
+        },
+        {
+          "$ref": "#/definitions/BuildEndCommand"
+        },
+        {
+          "$ref": "#/definitions/OfflineSeenCommand"
+        },
+        {
+          "$ref": "#/definitions/TickCommand"
+        }
+      ]
+    },
+    "ConfigureCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "buildingId": {
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/definitions/BuildingConfig"
+        },
+        "type": {
+          "const": "configure",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "buildingId",
+        "config"
+      ],
+      "type": "object"
+    },
+    "Container": {
+      "enum": [
+        "pet15",
+        "pet05",
+        "can045"
+      ],
+      "type": "string"
+    },
+    "ConveyorKind": {
+      "enum": [
+        "belt",
+        "pipe"
+      ],
+      "type": "string"
+    },
+    "DialogDoneCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "dialogDone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ],
+      "type": "object"
+    },
+    "ExpandHangarCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "side": {
+          "$ref": "#/definitions/Side"
+        },
+        "type": {
+          "const": "expandHangar",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "side"
+      ],
+      "type": "object"
+    },
+    "FactSeenCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "factSeen",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ],
+      "type": "object"
+    },
+    "FillSimEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "fluid": {
+          "$ref": "#/definitions/FluidKind"
+        },
+        "k": {
+          "const": "fill",
+          "type": "string"
+        },
+        "liters": {
+          "type": "number"
+        },
+        "node": {
+          "type": "string"
+        },
+        "t": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "t",
+        "k",
+        "node",
+        "fluid",
+        "liters"
+      ],
+      "type": "object"
+    },
+    "FluidKind": {
+      "enum": [
+        "kvas",
+        "kvas_white",
+        "syrup_tarhun",
+        "syrup_duchess",
+        "syrup_cola",
+        "syrup_fancy",
+        "syrup_street",
+        "lemonade_tarhun",
+        "lemonade_duchess",
+        "cola",
+        "fancy",
+        "street"
+      ],
+      "type": "string"
+    },
+    "InSimEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "defect": {
+          "type": "number"
+        },
+        "k": {
+          "const": "in",
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "sku": {
+          "$ref": "#/definitions/SkuId"
+        },
+        "t": {
+          "type": "number"
+        },
+        "unit": {
+          "enum": [
+            "box",
+            "pallet"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "k",
+        "node",
+        "sku",
+        "unit",
+        "defect"
+      ],
+      "type": "object"
+    },
+    "ItemKind": {
+      "enum": [
+        "preform",
+        "bottle_empty",
+        "bottle_filled",
+        "bottle_capped",
+        "bottle_labeled",
+        "box",
+        "pallet",
+        "can_empty",
+        "can_filled",
+        "can_sealed"
+      ],
+      "type": "string"
+    },
+    "Level": {
+      "enum": [
+        1,
+        2,
+        3
+      ],
+      "type": "number"
+    },
+    "MoveCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "buildingId": {
+          "type": "string"
+        },
+        "rot": {
+          "$ref": "#/definitions/Rot"
+        },
+        "type": {
+          "const": "move",
+          "type": "string"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "buildingId",
+        "x",
+        "y",
+        "rot"
+      ],
+      "type": "object"
+    },
+    "OfflineSeenCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "offlineSeen",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "PackSimEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "k": {
+          "const": "pack",
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "t": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "t",
+        "k",
+        "node"
+      ],
+      "type": "object"
+    },
+    "PaintCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/definitions/Cell"
+          },
+          "type": "array"
+        },
+        "color": {
+          "enum": [
+            "yellow",
+            "green",
+            "red",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "paint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "cells",
+        "color"
+      ],
+      "type": "object"
+    },
+    "PlaceCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/definitions/BuildingConfig"
+        },
+        "kind": {
+          "$ref": "#/definitions/BuildingKind"
+        },
+        "level": {
+          "$ref": "#/definitions/Level"
+        },
+        "rot": {
+          "$ref": "#/definitions/Rot"
+        },
+        "type": {
+          "const": "place",
+          "type": "string"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "x",
+        "y",
+        "rot"
+      ],
+      "type": "object"
+    },
+    "PlaceConveyorCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "hubs": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "splitter",
+                  "merger",
+                  "pipe_tee",
+                  "pipe_merge"
+                ],
+                "type": "string"
+              },
+              "rot": {
+                "$ref": "#/definitions/Rot"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "x",
+              "y",
+              "rot"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/definitions/ConveyorKind"
+        },
+        "level": {
+          "$ref": "#/definitions/Level"
+        },
+        "path": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "$ref": "#/definitions/Side"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y",
+              "dir"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "type": {
+          "const": "placeConveyor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ProfessionId": {
+      "enum": [
+        "kvasovar",
+        "operator",
+        "adjuster",
+        "lab",
+        "storekeeper",
+        "forklift",
+        "kipia"
+      ],
+      "type": "string"
+    },
+    "RedoCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "redo",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "RejectSimEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "k": {
+          "const": "reject",
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "sku": {
+          "$ref": "#/definitions/SkuId"
+        },
+        "t": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "t",
+        "k",
+        "node"
+      ],
+      "type": "object"
+    },
+    "RemoveCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "buildingId": {
+          "type": "string"
+        },
+        "cells": {
+          "items": {
+            "$ref": "#/definitions/Cell"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/definitions/ConveyorKind"
+        },
+        "type": {
+          "const": "remove",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "RenameFactoryCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "const": "renameFactory",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ],
+      "type": "object"
+    },
+    "RepairCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "buildingId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "repair",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "buildingId"
+      ],
+      "type": "object"
+    },
+    "RepayLoanCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "number"
+        },
+        "type": {
+          "const": "repayLoan",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "amount"
+      ],
+      "type": "object"
+    },
+    "RerouteConveyorCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/ConveyorKind"
+        },
+        "path": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "$ref": "#/definitions/Side"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y",
+              "dir"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "remove": {
+          "items": {
+            "$ref": "#/definitions/Cell"
+          },
+          "type": "array"
+        },
+        "type": {
+          "const": "rerouteConveyor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "remove",
+        "path"
+      ],
+      "type": "object"
+    },
+    "Rot": {
+      "enum": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "type": "number"
+    },
+    "RotateCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "buildingId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "rotate",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "buildingId"
+      ],
+      "type": "object"
+    },
+    "SellMarketCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "boxes": {
+          "type": "number"
+        },
+        "sku": {
+          "$ref": "#/definitions/SkuId"
+        },
+        "type": {
+          "const": "sellMarket",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "sku",
+        "boxes"
+      ],
+      "type": "object"
+    },
+    "SetUniversityCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "setUniversity",
+          "type": "string"
+        },
+        "university": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "university"
+      ],
+      "type": "object"
+    },
+    "ShiftResult": {
+      "additionalProperties": false,
+      "properties": {
+        "difficulty": {
+          "type": "number"
+        },
+        "durationMs": {
+          "type": "number"
+        },
+        "gameId": {
+          "type": "string"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "profession": {
+          "$ref": "#/definitions/ProfessionId"
+        },
+        "result": {
+          "enum": [
+            "win",
+            "fail"
+          ],
+          "type": "string"
+        },
+        "score": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "gameId",
+        "profession",
+        "result",
+        "score",
+        "durationMs",
+        "difficulty",
+        "metrics"
+      ],
+      "type": "object"
+    },
+    "Side": {
+      "enum": [
+        "N",
+        "E",
+        "S",
+        "W"
+      ],
+      "type": "string"
+    },
+    "SimEvent": {
+      "discriminator": {
+        "mapping": {
+          "fill": "#/definitions/FillSimEvent",
+          "in": "#/definitions/InSimEvent",
+          "pack": "#/definitions/PackSimEvent",
+          "reject": "#/definitions/RejectSimEvent",
+          "spawn": "#/definitions/SpawnSimEvent",
+          "work": "#/definitions/WorkSimEvent"
+        },
+        "propertyName": "k"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/definitions/SpawnSimEvent"
+        },
+        {
+          "$ref": "#/definitions/FillSimEvent"
+        },
+        {
+          "$ref": "#/definitions/PackSimEvent"
+        },
+        {
+          "$ref": "#/definitions/WorkSimEvent"
+        },
+        {
+          "$ref": "#/definitions/RejectSimEvent"
+        },
+        {
+          "$ref": "#/definitions/InSimEvent"
+        }
+      ]
+    },
+    "SkuId": {
+      "enum": [
+        "kvas_ochakovsky_15",
+        "lemonade_tarhun_15",
+        "lemonade_duchess_15",
+        "kvas_semeyny_15",
+        "coolcola_05",
+        "fancy_05",
+        "street_05",
+        "kvas_ochakovsky_can"
+      ],
+      "type": "string"
+    },
+    "SpawnSimEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "item": {
+          "$ref": "#/definitions/ItemKind"
+        },
+        "k": {
+          "const": "spawn",
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "t": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "t",
+        "k",
+        "node",
+        "item"
+      ],
+      "type": "object"
+    },
+    "SubmitShiftCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "buildingId": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/ShiftResult"
+        },
+        "type": {
+          "const": "submitShift",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "buildingId",
+        "result"
+      ],
+      "type": "object"
+    },
+    "TakeLoanCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "number"
+        },
+        "type": {
+          "const": "takeLoan",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "amount"
+      ],
+      "type": "object"
+    },
+    "TickCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/definitions/SimEvent"
+          },
+          "type": "array"
+        },
+        "from": {
+          "type": "number"
+        },
+        "seed": {
+          "type": "number"
+        },
+        "to": {
+          "type": "number"
+        },
+        "type": {
+          "const": "tick",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "from",
+        "to",
+        "events"
+      ],
+      "type": "object"
+    },
+    "UndoCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "undo",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "UpgradeCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "buildingId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "upgrade",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "buildingId"
+      ],
+      "type": "object"
+    },
+    "UpgradeConveyorCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/definitions/Cell"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/definitions/ConveyorKind"
+        },
+        "type": {
+          "const": "upgradeConveyor",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "cells"
+      ],
+      "type": "object"
+    },
+    "WorkSimEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "k": {
+          "const": "work",
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "sec": {
+          "type": "number"
+        },
+        "t": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "t",
+        "k",
+        "node",
+        "sec"
+      ],
+      "type": "object"
+    }
+  }
+}

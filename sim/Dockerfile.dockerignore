@@ -1,0 +1,9 @@
+# BuildKit reads <Dockerfile>.dockerignore (this file) in preference to the root .dockerignore.
+# Paths are relative to the build context = repo root.
+*
+!sim
+!vendor/frontend/web/src/lib
+**/node_modules
+sim/dist
+sim/test
+vendor/frontend/web/src/lib/**/*.test.ts

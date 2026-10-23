@@ -1,0 +1,3 @@
+[submodule "vendor/frontend"]
+	path = vendor/frontend
+	url = https://github.com/cvn-mosprom/frontend

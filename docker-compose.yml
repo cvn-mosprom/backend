@@ -1,0 +1,222 @@
+# Mosprom backend stack.
+#
+#   cp .env.example .env
+#   SIM_COMMIT=$(scripts/simcommit.sh) docker compose up -d --build
+#
+# Services: caddy (TLS + reverse proxy), api, db, migrate (one-shot), redis, sim, bot.
+# Optional profiles:
+#   pgbouncer     transaction pooling in front of db. Also set in .env:  DB_HOST=pgbouncer DB_PORT=6432 PGBOUNCER=1
+#   sim-replicas  a second sim container aliased to `sim` (Docker DNS round-robin; the API's SIM_URL stays http://sim:8080)
+#
+# Everything published on the host is bound to 127.0.0.1 except caddy (80/443).
+
+name: mosprom
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Deliberately in-network URLs: they override anything in .env (which holds host-style URLs for running pytest/uvicorn
+# from the host). api/bot talk to Postgres through DB_HOST:DB_PORT (db:5432, or pgbouncer:6432 with the profile);
+# migrate always talks to db directly (DDL must not go through transaction pooling).
+x-db-url: &db-url postgresql+asyncpg://${POSTGRES_USER:-mosprom}:${POSTGRES_PASSWORD:-mosprom}@${DB_HOST:-db}:${DB_PORT:-5432}/${POSTGRES_DB:-mosprom}
+x-db-url-direct: &db-url-direct postgresql+asyncpg://${POSTGRES_USER:-mosprom}:${POSTGRES_PASSWORD:-mosprom}@db:5432/${POSTGRES_DB:-mosprom}
+
+x-env-file: &env-file
+  - path: .env
+    required: false
+
+x-api-build: &api-build
+  context: ./api
+  dockerfile: Dockerfile
+
+x-sim: &sim
+  build:
+    context: . # repo root: the image bundles vendor/frontend/web/src/lib (see .dockerignore)
+    dockerfile: sim/Dockerfile
+    args:
+      SIM_COMMIT: ${SIM_COMMIT:-dev}
+  # image is pinned to the vendored frontend commit (lib/sim): a lib/sim bump = new tag = new sim image
+  image: mosprom-sim:${SIM_COMMIT:-dev}
+  restart: unless-stopped
+  env_file: *env-file
+  environment:
+    PORT: "8080"
+    SIM_COMMIT: ${SIM_COMMIT:-dev}
+    SIM_WORKERS: ${SIM_WORKERS:-2}
+  healthcheck:
+    test:
+      - CMD
+      - node
+      - -e
+      - "fetch('http://127.0.0.1:8080/health',{signal:AbortSignal.timeout(2500)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    interval: 10s
+    timeout: 4s
+    retries: 5
+    start_period: 10s
+  logging: *logging
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_started
+    logging: *logging
+
+  api:
+    build: *api-build
+    image: mosprom-api:${API_TAG:-dev}
+    restart: unless-stopped
+    env_file: *env-file
+    environment:
+      DATABASE_URL: *db-url
+      PGBOUNCER: ${PGBOUNCER:-0} # 1 only with the pgbouncer profile (asyncpg: statement_cache_size=0)
+      REDIS_URL: redis://redis:6379/0
+      SIM_URL: http://sim:8080
+    expose:
+      - "8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # sim is intentionally NOT a dependency: leads, quiz, events and auth must work while sim is down.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+    logging: *logging
+
+  migrate:
+    build: *api-build
+    image: mosprom-api:${API_TAG:-dev}
+    restart: "no"
+    env_file: *env-file
+    environment:
+      DATABASE_URL: *db-url-direct
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *logging
+
+  db:
+    image: postgres:16-alpine # one pinned major, no version-specific features (spec: Блок. Стек)
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mosprom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mosprom}
+      POSTGRES_DB: ${POSTGRES_DB:-mosprom}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Caches / counters only (rate limit, idempotency cache, leaderboard cache, initData cache); no game state,
+    # so no persistence. volatile-lru: only keys that have a TTL may be evicted.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+  sim:
+    <<: *sim
+    expose:
+      - "8080"
+    ports:
+      - "127.0.0.1:58080:8080" # localhost-only, for contract tests / debugging (SIM_URL=http://127.0.0.1:58080)
+
+  sim-replica:
+    <<: *sim
+    profiles: ["sim-replicas"]
+    networks:
+      default:
+        aliases:
+          - sim # same DNS name as the primary: Docker's embedded DNS returns both containers
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    profiles: ["pgbouncer"]
+    restart: unless-stopped
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-mosprom}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-mosprom}
+      DB_NAME: ${POSTGRES_DB:-mosprom}
+      POOL_MODE: transaction # => PGBOUNCER=1 in the api (statement_cache_size=0, prepared_statement_cache_size=0)
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: "1000"
+      DEFAULT_POOL_SIZE: "20"
+      LISTEN_PORT: "6432"
+    expose:
+      - "6432"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    image: mosprom-bot:${BOT_TAG:-dev}
+    restart: unless-stopped
+    env_file: *env-file
+    environment:
+      DATABASE_URL: *db-url
+      PGBOUNCER: ${PGBOUNCER:-0} # 1 only with the pgbouncer profile (asyncpg: statement_cache_size=0)
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

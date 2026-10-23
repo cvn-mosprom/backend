@@ -1,0 +1,51 @@
+# Root .dockerignore: it only applies to builds whose context is the repo root, i.e. the sim image
+# (docker-compose.yml: sim -> context ".", dockerfile sim/Dockerfile). api/ and bot/ build from their own
+# directories and have their own .dockerignore.
+#
+# The sim image needs: sim/ and vendor/frontend/web/src/lib (imported through the $lib alias). Nothing else.
+
+# VCS / editors / secrets
+**/.git
+.gitmodules
+.gitattributes
+.idea
+.vscode
+.env
+.env.*
+!.env.example
+**/*.log
+
+# language artefacts (the image installs/builds its own)
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.svelte-kit
+sim/dist
+contract/schema/*.tmp
+
+# other repo parts that are not part of the sim build
+api
+bot
+contract
+docs
+scripts
+docker-compose.yml
+Caddyfile
+README.md
+PROGRESS.md
+
+# vendored frontend: keep web/src/lib only
+vendor/frontend/assets
+vendor/frontend/docs
+vendor/frontend/pipeline
+vendor/frontend/prototype
+vendor/frontend/README.md
+vendor/frontend/web/static
+vendor/frontend/web/docs
+vendor/frontend/web/tools
+vendor/frontend/web/src/routes
+vendor/frontend/web/src/app.css
+vendor/frontend/web/src/app.html

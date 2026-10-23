@@ -1,0 +1,1383 @@
+{
+  "$ref": "#/definitions/GameSnapshot",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "BuildingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "container": {
+          "$ref": "#/definitions/Container"
+        },
+        "fluid": {
+          "$ref": "#/definitions/FluidKind"
+        }
+      },
+      "type": "object"
+    },
+    "BuildingKind": {
+      "enum": [
+        "splitter",
+        "merger",
+        "crossing",
+        "pipe_tee",
+        "pipe_merge",
+        "intake",
+        "blow",
+        "brew_tank",
+        "syrup",
+        "saturator",
+        "filler",
+        "capper",
+        "labeler",
+        "qc",
+        "packer",
+        "palletizer",
+        "storage",
+        "dock",
+        "lab",
+        "rest",
+        "can_depal",
+        "can_filler",
+        "seamer"
+      ],
+      "type": "string"
+    },
+    "Cell": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "type": "object"
+    },
+    "CommandResult": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CommandResultOk"
+        },
+        {
+          "$ref": "#/definitions/CommandResultFailed"
+        }
+      ]
+    },
+    "CommandResultFailed": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "ok": {
+          "const": false,
+          "type": "boolean"
+        },
+        "snapshot": {
+          "$ref": "#/definitions/GameSnapshot"
+        }
+      },
+      "required": [
+        "ok",
+        "error"
+      ],
+      "type": "object"
+    },
+    "CommandResultOk": {
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true,
+          "type": "boolean"
+        },
+        "rewards": {
+          "additionalProperties": false,
+          "properties": {
+            "credits": {
+              "type": "number"
+            },
+            "stars": {
+              "type": "number"
+            },
+            "unlocked": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "xp": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "snapshot": {
+          "$ref": "#/definitions/GameSnapshot"
+        },
+        "toast": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "snapshot"
+      ],
+      "type": "object"
+    },
+    "Container": {
+      "enum": [
+        "pet15",
+        "pet05",
+        "can045"
+      ],
+      "type": "string"
+    },
+    "ConveyorKind": {
+      "enum": [
+        "belt",
+        "pipe"
+      ],
+      "type": "string"
+    },
+    "ConveyorTile": {
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "$ref": "#/definitions/Side"
+        },
+        "kind": {
+          "$ref": "#/definitions/ConveyorKind"
+        },
+        "level": {
+          "$ref": "#/definitions/Level"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "kind",
+        "dir",
+        "level"
+      ],
+      "type": "object"
+    },
+    "DayEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "effects": {
+          "additionalProperties": false,
+          "properties": {
+            "minQuality": {
+              "type": "number"
+            },
+            "priceMult": {
+              "type": "number"
+            },
+            "sku": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SkuId"
+                },
+                {
+                  "const": "kvas_all",
+                  "type": "string"
+                },
+                {
+                  "const": "lemonade_all",
+                  "type": "string"
+                }
+              ]
+            },
+            "starsMult": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "until": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "text",
+        "until",
+        "effects"
+      ],
+      "type": "object"
+    },
+    "DialogProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "type": "string"
+        },
+        "done": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "factsSeen": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "lastHintAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "done",
+        "lastHintAt",
+        "factsSeen"
+      ],
+      "type": "object"
+    },
+    "Factory": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "additionalProperties": false,
+          "properties": {
+            "coolcola_05": {
+              "type": "number"
+            },
+            "fancy_05": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_15": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_can": {
+              "type": "number"
+            },
+            "kvas_semeyny_15": {
+              "type": "number"
+            },
+            "lemonade_duchess_15": {
+              "type": "number"
+            },
+            "lemonade_tarhun_15": {
+              "type": "number"
+            },
+            "street_05": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "credits": {
+          "type": "number"
+        },
+        "lastShipped": {
+          "additionalProperties": false,
+          "properties": {
+            "coolcola_05": {
+              "type": "number"
+            },
+            "fancy_05": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_15": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_can": {
+              "type": "number"
+            },
+            "kvas_semeyny_15": {
+              "type": "number"
+            },
+            "lemonade_duchess_15": {
+              "type": "number"
+            },
+            "lemonade_tarhun_15": {
+              "type": "number"
+            },
+            "street_05": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "lastTick": {
+          "type": "number"
+        },
+        "layout": {
+          "$ref": "#/definitions/Layout"
+        },
+        "level": {
+          "type": "number"
+        },
+        "loan": {
+          "$ref": "#/definitions/Loan"
+        },
+        "loanLog": {
+          "items": {
+            "$ref": "#/definitions/LoanLogEntry"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "produced": {
+          "type": "number"
+        },
+        "quality": {
+          "type": "number"
+        },
+        "referrals": {
+          "type": "number"
+        },
+        "rejected": {
+          "type": "number"
+        },
+        "shipped": {
+          "additionalProperties": false,
+          "properties": {
+            "coolcola_05": {
+              "type": "number"
+            },
+            "fancy_05": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_15": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_can": {
+              "type": "number"
+            },
+            "kvas_semeyny_15": {
+              "type": "number"
+            },
+            "lemonade_duchess_15": {
+              "type": "number"
+            },
+            "lemonade_tarhun_15": {
+              "type": "number"
+            },
+            "street_05": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "simAt": {
+          "type": "number"
+        },
+        "stars": {
+          "type": "number"
+        },
+        "stock": {
+          "additionalProperties": false,
+          "properties": {
+            "coolcola_05": {
+              "additionalProperties": false,
+              "properties": {
+                "boxes": {
+                  "type": "number"
+                },
+                "defect": {
+                  "type": "number"
+                },
+                "pallets": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "boxes",
+                "pallets",
+                "defect"
+              ],
+              "type": "object"
+            },
+            "fancy_05": {
+              "additionalProperties": false,
+              "properties": {
+                "boxes": {
+                  "type": "number"
+                },
+                "defect": {
+                  "type": "number"
+                },
+                "pallets": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "boxes",
+                "pallets",
+                "defect"
+              ],
+              "type": "object"
+            },
+            "kvas_ochakovsky_15": {
+              "additionalProperties": false,
+              "properties": {
+                "boxes": {
+                  "type": "number"
+                },
+                "defect": {
+                  "type": "number"
+                },
+                "pallets": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "boxes",
+                "pallets",
+                "defect"
+              ],
+              "type": "object"
+            },
+            "kvas_ochakovsky_can": {
+              "additionalProperties": false,
+              "properties": {
+                "boxes": {
+                  "type": "number"
+                },
+                "defect": {
+                  "type": "number"
+                },
+                "pallets": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "boxes",
+                "pallets",
+                "defect"
+              ],
+              "type": "object"
+            },
+            "kvas_semeyny_15": {
+              "additionalProperties": false,
+              "properties": {
+                "boxes": {
+                  "type": "number"
+                },
+                "defect": {
+                  "type": "number"
+                },
+                "pallets": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "boxes",
+                "pallets",
+                "defect"
+              ],
+              "type": "object"
+            },
+            "lemonade_duchess_15": {
+              "additionalProperties": false,
+              "properties": {
+                "boxes": {
+                  "type": "number"
+                },
+                "defect": {
+                  "type": "number"
+                },
+                "pallets": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "boxes",
+                "pallets",
+                "defect"
+              ],
+              "type": "object"
+            },
+            "lemonade_tarhun_15": {
+              "additionalProperties": false,
+              "properties": {
+                "boxes": {
+                  "type": "number"
+                },
+                "defect": {
+                  "type": "number"
+                },
+                "pallets": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "boxes",
+                "pallets",
+                "defect"
+              ],
+              "type": "object"
+            },
+            "street_05": {
+              "additionalProperties": false,
+              "properties": {
+                "boxes": {
+                  "type": "number"
+                },
+                "defect": {
+                  "type": "number"
+                },
+                "pallets": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "boxes",
+                "pallets",
+                "defect"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "warehouse": {
+          "additionalProperties": false,
+          "properties": {
+            "cap": {
+              "type": "number"
+            },
+            "used": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cap",
+            "used"
+          ],
+          "type": "object"
+        },
+        "xp": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "layout",
+        "credits",
+        "stars",
+        "xp",
+        "level",
+        "shipped",
+        "collection",
+        "rejected",
+        "lastTick"
+      ],
+      "type": "object"
+    },
+    "FluidKind": {
+      "enum": [
+        "kvas",
+        "kvas_white",
+        "syrup_tarhun",
+        "syrup_duchess",
+        "syrup_cola",
+        "syrup_fancy",
+        "syrup_street",
+        "lemonade_tarhun",
+        "lemonade_duchess",
+        "cola",
+        "fancy",
+        "street"
+      ],
+      "type": "string"
+    },
+    "GameSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "dialogs": {
+          "$ref": "#/definitions/DialogProgress"
+        },
+        "event": {
+          "$ref": "#/definitions/DayEvent"
+        },
+        "factory": {
+          "$ref": "#/definitions/Factory"
+        },
+        "loanLimit": {
+          "type": "number"
+        },
+        "offline": {
+          "$ref": "#/definitions/OfflineReport"
+        },
+        "orders": {
+          "items": {
+            "$ref": "#/definitions/Order"
+          },
+          "type": "array"
+        },
+        "player": {
+          "$ref": "#/definitions/Player"
+        },
+        "rank": {
+          "additionalProperties": false,
+          "properties": {
+            "place": {
+              "type": "number"
+            },
+            "total": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "place",
+            "total"
+          ],
+          "type": "object"
+        },
+        "redoLabel": {
+          "type": "string"
+        },
+        "redoSteps": {
+          "type": "number"
+        },
+        "season": {
+          "$ref": "#/definitions/Season"
+        },
+        "serverTime": {
+          "type": "number"
+        },
+        "skills": {
+          "$ref": "#/definitions/SkillProfile"
+        },
+        "undoLabel": {
+          "type": "string"
+        },
+        "undoSteps": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "serverTime",
+        "player",
+        "factory",
+        "orders",
+        "season",
+        "skills",
+        "dialogs"
+      ],
+      "type": "object"
+    },
+    "Gate": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "side": {
+          "$ref": "#/definitions/Side"
+        }
+      },
+      "required": [
+        "id",
+        "side",
+        "offset"
+      ],
+      "type": "object"
+    },
+    "Hangar": {
+      "additionalProperties": false,
+      "properties": {
+        "gates": {
+          "items": {
+            "$ref": "#/definitions/Gate"
+          },
+          "type": "array"
+        },
+        "h": {
+          "type": "number"
+        },
+        "paint": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "color": {
+                "enum": [
+                  "yellow",
+                  "green",
+                  "red"
+                ],
+                "type": "string"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y",
+              "color"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "pillars": {
+          "items": {
+            "$ref": "#/definitions/Cell"
+          },
+          "type": "array"
+        },
+        "w": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "w",
+        "h",
+        "gates",
+        "pillars",
+        "paint"
+      ],
+      "type": "object"
+    },
+    "Layout": {
+      "additionalProperties": false,
+      "properties": {
+        "buildings": {
+          "items": {
+            "$ref": "#/definitions/PlacedBuilding"
+          },
+          "type": "array"
+        },
+        "conveyors": {
+          "items": {
+            "$ref": "#/definitions/ConveyorTile"
+          },
+          "type": "array"
+        },
+        "hangar": {
+          "$ref": "#/definitions/Hangar"
+        }
+      },
+      "required": [
+        "hangar",
+        "buildings",
+        "conveyors"
+      ],
+      "type": "object"
+    },
+    "Level": {
+      "enum": [
+        1,
+        2,
+        3
+      ],
+      "type": "number"
+    },
+    "Loan": {
+      "additionalProperties": false,
+      "properties": {
+        "fee": {
+          "type": "number"
+        },
+        "left": {
+          "type": "number"
+        },
+        "overdueApplied": {
+          "type": "boolean"
+        },
+        "principal": {
+          "type": "number"
+        },
+        "takenAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "principal",
+        "fee",
+        "left",
+        "takenAt"
+      ],
+      "type": "object"
+    },
+    "LoanLogEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "number"
+        },
+        "left": {
+          "type": "number"
+        },
+        "source": {
+          "enum": [
+            "order",
+            "market",
+            "manual"
+          ],
+          "type": "string"
+        },
+        "t": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "t",
+        "amount",
+        "source",
+        "left"
+      ],
+      "type": "object"
+    },
+    "OfflineReport": {
+      "additionalProperties": false,
+      "properties": {
+        "broken": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "capped": {
+          "type": "boolean"
+        },
+        "creditsSpent": {
+          "type": "number"
+        },
+        "hours": {
+          "type": "number"
+        },
+        "producedBottles": {
+          "type": "number"
+        },
+        "producedBoxes": {
+          "additionalProperties": false,
+          "properties": {
+            "coolcola_05": {
+              "type": "number"
+            },
+            "fancy_05": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_15": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_can": {
+              "type": "number"
+            },
+            "kvas_semeyny_15": {
+              "type": "number"
+            },
+            "lemonade_duchess_15": {
+              "type": "number"
+            },
+            "lemonade_tarhun_15": {
+              "type": "number"
+            },
+            "street_05": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "storageFull": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "hours",
+        "capped",
+        "producedBottles",
+        "producedBoxes",
+        "creditsSpent",
+        "broken",
+        "storageFull"
+      ],
+      "type": "object"
+    },
+    "Order": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptedAt": {
+          "type": "number"
+        },
+        "client": {
+          "type": "string"
+        },
+        "clientKind": {
+          "enum": [
+            "shop",
+            "cafe",
+            "chain",
+            "festival",
+            "export"
+          ],
+          "type": "string"
+        },
+        "deadline": {
+          "type": "number"
+        },
+        "defect": {
+          "type": "number"
+        },
+        "dockId": {
+          "type": "string"
+        },
+        "hours": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "loaded": {
+          "type": "number"
+        },
+        "minQuality": {
+          "type": "number"
+        },
+        "qty": {
+          "type": "number"
+        },
+        "rewardCredits": {
+          "type": "number"
+        },
+        "rewardStars": {
+          "type": "number"
+        },
+        "rewardXp": {
+          "type": "number"
+        },
+        "sku": {
+          "$ref": "#/definitions/SkuId"
+        },
+        "status": {
+          "enum": [
+            "available",
+            "accepted",
+            "loading",
+            "done",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "tutorial": {
+          "type": "boolean"
+        },
+        "unit": {
+          "enum": [
+            "box",
+            "pallet"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "client",
+        "clientKind",
+        "sku",
+        "qty",
+        "unit",
+        "minQuality",
+        "rewardCredits",
+        "rewardStars",
+        "rewardXp",
+        "deadline",
+        "status",
+        "loaded"
+      ],
+      "type": "object"
+    },
+    "PlacedBuilding": {
+      "additionalProperties": false,
+      "properties": {
+        "boost": {
+          "additionalProperties": false,
+          "properties": {
+            "mult": {
+              "type": "number"
+            },
+            "until": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "mult",
+            "until"
+          ],
+          "type": "object"
+        },
+        "builtAt": {
+          "type": "number"
+        },
+        "config": {
+          "$ref": "#/definitions/BuildingConfig"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/BuildingKind"
+        },
+        "level": {
+          "$ref": "#/definitions/Level"
+        },
+        "rot": {
+          "$ref": "#/definitions/Rot"
+        },
+        "stock": {
+          "additionalProperties": false,
+          "properties": {
+            "coolcola_05": {
+              "type": "number"
+            },
+            "fancy_05": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_15": {
+              "type": "number"
+            },
+            "kvas_ochakovsky_can": {
+              "type": "number"
+            },
+            "kvas_semeyny_15": {
+              "type": "number"
+            },
+            "lemonade_duchess_15": {
+              "type": "number"
+            },
+            "lemonade_tarhun_15": {
+              "type": "number"
+            },
+            "street_05": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "wear": {
+          "type": "number"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "x",
+        "y",
+        "rot",
+        "level",
+        "wear",
+        "builtAt"
+      ],
+      "type": "object"
+    },
+    "Player": {
+      "additionalProperties": false,
+      "properties": {
+        "ageConfirmed": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "tgId": {
+          "type": "number"
+        },
+        "university": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "ageConfirmed",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "Rot": {
+      "enum": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "type": "number"
+    },
+    "Season": {
+      "additionalProperties": false,
+      "properties": {
+        "closed": {
+          "type": "boolean"
+        },
+        "dayIndex": {
+          "type": "number"
+        },
+        "days": {
+          "type": "number"
+        },
+        "endsAt": {
+          "type": "number"
+        },
+        "id": {
+          "type": "number"
+        },
+        "shiftsLeft": {
+          "type": "number"
+        },
+        "shiftsPerDay": {
+          "type": "number"
+        },
+        "startsAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "startsAt",
+        "endsAt",
+        "shiftsLeft",
+        "shiftsPerDay",
+        "dayIndex",
+        "days",
+        "closed"
+      ],
+      "type": "object"
+    },
+    "Side": {
+      "enum": [
+        "N",
+        "E",
+        "S",
+        "W"
+      ],
+      "type": "string"
+    },
+    "SkillProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "accuracy": {
+          "type": "number"
+        },
+        "attention": {
+          "type": "number"
+        },
+        "byProfession": {
+          "additionalProperties": false,
+          "properties": {
+            "adjuster": {
+              "additionalProperties": false,
+              "properties": {
+                "avgScore": {
+                  "type": "number"
+                },
+                "played": {
+                  "type": "number"
+                },
+                "wins": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "played",
+                "wins",
+                "avgScore"
+              ],
+              "type": "object"
+            },
+            "forklift": {
+              "additionalProperties": false,
+              "properties": {
+                "avgScore": {
+                  "type": "number"
+                },
+                "played": {
+                  "type": "number"
+                },
+                "wins": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "played",
+                "wins",
+                "avgScore"
+              ],
+              "type": "object"
+            },
+            "kipia": {
+              "additionalProperties": false,
+              "properties": {
+                "avgScore": {
+                  "type": "number"
+                },
+                "played": {
+                  "type": "number"
+                },
+                "wins": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "played",
+                "wins",
+                "avgScore"
+              ],
+              "type": "object"
+            },
+            "kvasovar": {
+              "additionalProperties": false,
+              "properties": {
+                "avgScore": {
+                  "type": "number"
+                },
+                "played": {
+                  "type": "number"
+                },
+                "wins": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "played",
+                "wins",
+                "avgScore"
+              ],
+              "type": "object"
+            },
+            "lab": {
+              "additionalProperties": false,
+              "properties": {
+                "avgScore": {
+                  "type": "number"
+                },
+                "played": {
+                  "type": "number"
+                },
+                "wins": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "played",
+                "wins",
+                "avgScore"
+              ],
+              "type": "object"
+            },
+            "operator": {
+              "additionalProperties": false,
+              "properties": {
+                "avgScore": {
+                  "type": "number"
+                },
+                "played": {
+                  "type": "number"
+                },
+                "wins": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "played",
+                "wins",
+                "avgScore"
+              ],
+              "type": "object"
+            },
+            "storekeeper": {
+              "additionalProperties": false,
+              "properties": {
+                "avgScore": {
+                  "type": "number"
+                },
+                "played": {
+                  "type": "number"
+                },
+                "wins": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "played",
+                "wins",
+                "avgScore"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "endurance": {
+          "type": "number"
+        },
+        "speed": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "speed",
+        "accuracy",
+        "attention",
+        "endurance",
+        "byProfession"
+      ],
+      "type": "object"
+    },
+    "SkuId": {
+      "enum": [
+        "kvas_ochakovsky_15",
+        "lemonade_tarhun_15",
+        "lemonade_duchess_15",
+        "kvas_semeyny_15",
+        "coolcola_05",
+        "fancy_05",
+        "street_05",
+        "kvas_ochakovsky_can"
+      ],
+      "type": "string"
+    }
+  }
+}

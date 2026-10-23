@@ -1,0 +1,419 @@
+{
+  "ageConfirm": [
+    {
+      "type": "ageConfirm"
+    }
+  ],
+  "renameFactory": [
+    {
+      "type": "renameFactory",
+      "name": "Цех Кваса №1"
+    }
+  ],
+  "setUniversity": [
+    {
+      "type": "setUniversity",
+      "university": "МГТУ им. Баумана"
+    }
+  ],
+  "place": [
+    {
+      "type": "place",
+      "kind": "intake",
+      "x": 2,
+      "y": 5,
+      "rot": 0
+    },
+    {
+      "type": "place",
+      "kind": "brew_tank",
+      "x": 6,
+      "y": 3,
+      "rot": 1,
+      "config": {
+        "fluid": "kvas"
+      },
+      "level": 2
+    },
+    {
+      "type": "place",
+      "kind": "blow",
+      "x": 10,
+      "y": 3,
+      "rot": 3,
+      "config": {
+        "container": "pet15"
+      }
+    }
+  ],
+  "placeConveyor": [
+    {
+      "type": "placeConveyor",
+      "kind": "belt",
+      "path": [
+        {
+          "x": 4,
+          "y": 5,
+          "dir": "E"
+        },
+        {
+          "x": 5,
+          "y": 5,
+          "dir": "E"
+        },
+        {
+          "x": 6,
+          "y": 5,
+          "dir": "S"
+        }
+      ]
+    },
+    {
+      "type": "placeConveyor",
+      "kind": "pipe",
+      "level": 2,
+      "path": [
+        {
+          "x": 8,
+          "y": 3,
+          "dir": "E"
+        },
+        {
+          "x": 9,
+          "y": 3,
+          "dir": "E"
+        }
+      ],
+      "hubs": [
+        {
+          "kind": "pipe_tee",
+          "x": 8,
+          "y": 3,
+          "rot": 0
+        },
+        {
+          "kind": "splitter",
+          "x": 9,
+          "y": 3,
+          "rot": 2
+        }
+      ]
+    }
+  ],
+  "rerouteConveyor": [
+    {
+      "type": "rerouteConveyor",
+      "kind": "belt",
+      "remove": [
+        {
+          "x": 5,
+          "y": 5
+        },
+        {
+          "x": 6,
+          "y": 5
+        }
+      ],
+      "path": [
+        {
+          "x": 5,
+          "y": 5,
+          "dir": "S"
+        },
+        {
+          "x": 5,
+          "y": 6,
+          "dir": "E"
+        },
+        {
+          "x": 6,
+          "y": 6,
+          "dir": "E"
+        }
+      ]
+    }
+  ],
+  "remove": [
+    {
+      "type": "remove",
+      "buildingId": "b3"
+    },
+    {
+      "type": "remove",
+      "cells": [
+        {
+          "x": 4,
+          "y": 5
+        },
+        {
+          "x": 5,
+          "y": 5
+        }
+      ],
+      "kind": "belt"
+    },
+    {
+      "type": "remove",
+      "cells": [
+        {
+          "x": 4,
+          "y": 5
+        }
+      ]
+    }
+  ],
+  "move": [
+    {
+      "type": "move",
+      "buildingId": "b2",
+      "x": 7,
+      "y": 4,
+      "rot": 2
+    }
+  ],
+  "rotate": [
+    {
+      "type": "rotate",
+      "buildingId": "b2"
+    }
+  ],
+  "configure": [
+    {
+      "type": "configure",
+      "buildingId": "b1",
+      "config": {
+        "fluid": "kvas_white"
+      }
+    },
+    {
+      "type": "configure",
+      "buildingId": "b4",
+      "config": {
+        "fluid": "lemonade_tarhun",
+        "container": "pet05"
+      }
+    }
+  ],
+  "upgrade": [
+    {
+      "type": "upgrade",
+      "buildingId": "b1"
+    }
+  ],
+  "upgradeConveyor": [
+    {
+      "type": "upgradeConveyor",
+      "cells": [
+        {
+          "x": 4,
+          "y": 5
+        },
+        {
+          "x": 5,
+          "y": 5
+        }
+      ],
+      "kind": "belt"
+    },
+    {
+      "type": "upgradeConveyor",
+      "cells": [
+        {
+          "x": 8,
+          "y": 3
+        }
+      ]
+    }
+  ],
+  "repair": [
+    {
+      "type": "repair",
+      "buildingId": "b3"
+    }
+  ],
+  "expandHangar": [
+    {
+      "type": "expandHangar",
+      "side": "E"
+    },
+    {
+      "type": "expandHangar",
+      "side": "N"
+    }
+  ],
+  "paint": [
+    {
+      "type": "paint",
+      "cells": [
+        {
+          "x": 1,
+          "y": 1
+        },
+        {
+          "x": 2,
+          "y": 1
+        }
+      ],
+      "color": "yellow"
+    },
+    {
+      "type": "paint",
+      "cells": [
+        {
+          "x": 1,
+          "y": 1
+        }
+      ],
+      "color": null
+    }
+  ],
+  "acceptOrder": [
+    {
+      "type": "acceptOrder",
+      "orderId": "o1761253200_2_481516",
+      "dockId": "b7"
+    }
+  ],
+  "cancelOrder": [
+    {
+      "type": "cancelOrder",
+      "orderId": "o1761253200_2_481516"
+    }
+  ],
+  "sellMarket": [
+    {
+      "type": "sellMarket",
+      "sku": "kvas_ochakovsky_15",
+      "boxes": 12
+    }
+  ],
+  "takeLoan": [
+    {
+      "type": "takeLoan",
+      "amount": 1500
+    }
+  ],
+  "repayLoan": [
+    {
+      "type": "repayLoan",
+      "amount": 500
+    }
+  ],
+  "submitShift": [
+    {
+      "type": "submitShift",
+      "buildingId": "b3",
+      "result": {
+        "gameId": "kvasovar",
+        "profession": "kvasovar",
+        "result": "win",
+        "score": 0.83,
+        "durationMs": 5900,
+        "difficulty": 0.31,
+        "metrics": {
+          "accuracy": 0.9,
+          "reaction_ms": 412
+        }
+      }
+    },
+    {
+      "type": "submitShift",
+      "buildingId": "b5",
+      "result": {
+        "gameId": "forklift",
+        "profession": "forklift",
+        "result": "fail",
+        "score": 0.22,
+        "durationMs": 7000,
+        "difficulty": 0.15,
+        "metrics": {}
+      }
+    }
+  ],
+  "dialogDone": [
+    {
+      "type": "dialogDone",
+      "id": "q_intro"
+    }
+  ],
+  "factSeen": [
+    {
+      "type": "factSeen",
+      "id": "f1978"
+    }
+  ],
+  "undo": [
+    {
+      "type": "undo"
+    }
+  ],
+  "redo": [
+    {
+      "type": "redo"
+    }
+  ],
+  "buildEnd": [
+    {
+      "type": "buildEnd"
+    }
+  ],
+  "offlineSeen": [
+    {
+      "type": "offlineSeen"
+    }
+  ],
+  "tick": [
+    {
+      "type": "tick",
+      "from": 1761253200000,
+      "to": 1761253205000,
+      "seed": 12345,
+      "events": [
+        {
+          "t": 1761253200100,
+          "k": "spawn",
+          "node": "b1",
+          "item": "preform"
+        },
+        {
+          "t": 1761253200900,
+          "k": "fill",
+          "node": "b4",
+          "fluid": "kvas",
+          "liters": 1.5
+        },
+        {
+          "t": 1761253201500,
+          "k": "pack",
+          "node": "b6"
+        },
+        {
+          "t": 1761253202000,
+          "k": "work",
+          "node": "b4",
+          "sec": 2
+        },
+        {
+          "t": 1761253203000,
+          "k": "reject",
+          "node": "b5",
+          "sku": "kvas_ochakovsky_15"
+        },
+        {
+          "t": 1761253204000,
+          "k": "in",
+          "node": "b7",
+          "sku": "kvas_ochakovsky_15",
+          "unit": "box",
+          "defect": 0.02
+        }
+      ]
+    },
+    {
+      "type": "tick",
+      "from": 1761253200000,
+      "to": 1761253200050,
+      "events": []
+    }
+  ]
+}

@@ -147,8 +147,12 @@ jobs:
             ROUTING_ZONE=${{ vars.ROUTING_ZONE }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Open the OCI layout for Trivy
+        run: |
+          mkdir "$RUNNER_TEMP/image-oci"
+          tar -xf /tmp/image.tar -C "$RUNNER_TEMP/image-oci"
       - uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
-        with: {input: /tmp/image.tar, severity: 'HIGH,CRITICAL', exit-code: '1', scanners: vuln, ignore-unfixed: false}
+        with: {input: '${{ runner.temp }}/image-oci', severity: 'HIGH,CRITICAL', exit-code: '1', scanners: vuln, ignore-unfixed: false}
       - name: Push the already scanned OCI artifact
         run: |
           # skopeo is installed from the runner's signed package repository.
@@ -233,15 +237,18 @@ jobs:
             ROUTING_ZONE=ochakovo.velikoss.ru
             REGIONAL_ROUTING=0
             VITE_API_URL=/
-            VITE_TG_APP_URL=https://t.me/cvnprombot?startapp=game
             VITE_BOT_USERNAME=cvnprombot
             VITE_TELEGRAM_ONLY=1
             VITE_HR_DEMO=1
             EXTERNAL_MEDIA=0
           cache-from: type=gha,scope=prototype-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=prototype-${{ matrix.name }}
+      - name: Open the OCI layout for Trivy
+        run: |
+          mkdir "$RUNNER_TEMP/image-oci"
+          tar -xf /tmp/image.tar -C "$RUNNER_TEMP/image-oci"
       - uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
-        with: {input: /tmp/image.tar, severity: 'HIGH,CRITICAL', exit-code: '1', scanners: vuln, ignore-unfixed: false}
+        with: {input: '${{ runner.temp }}/image-oci', severity: 'HIGH,CRITICAL', exit-code: '1', scanners: vuln, ignore-unfixed: false}
       - name: Publish the scanned artifact without rebuilding
         env: {IMAGE: '${{ matrix.name }}'}
         run: |

@@ -96,9 +96,9 @@ def test_on_start_without_https_url_replies_without_button():
     ("env", "expected"),
     [
         ({}, ""),
-        ({"DOMAIN": "game.example.com"}, "https://game.example.com"),
-        ({"DOMAIN": "localhost"}, "https://localhost"),
-        ({"DOMAIN": "http://localhost"}, "http://localhost"),
+        ({"DOMAIN": "game.example.com"}, "https://game.example.com/app"),
+        ({"DOMAIN": "localhost"}, "https://localhost/app"),
+        ({"DOMAIN": "http://localhost"}, "http://localhost/app"),
         ({"DOMAIN": "x.example.com", "WEBAPP_URL": "https://app.example.com/"}, "https://app.example.com"),
     ],
 )

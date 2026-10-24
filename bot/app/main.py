@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.utils.token import TokenValidationError
 
@@ -59,7 +60,11 @@ def make_bot(settings: Settings) -> Bot | None:
         log.warning("BOT_TOKEN is empty: the bot will not connect to Telegram and just idles (set BOT_TOKEN in .env)")
         return None
     try:
-        return Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        return Bot(
+            token=settings.bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            session=AiohttpSession(proxy=settings.telegram_proxy_url) if settings.telegram_proxy_url else None,
+        )
     except TokenValidationError:
         log.error("BOT_TOKEN is malformed: the bot will not connect to Telegram and just idles")
         return None

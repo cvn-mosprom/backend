@@ -57,7 +57,7 @@ async def test_bootstrap_creates_factory(game, fake_sim):
     body = resp.json()
     assert set(body) == {"version", "serverTime", "season", "features", "snapshot"}
     assert body["version"] == 0
-    assert body["features"] == {"undo": False, "serverOrderEta": False}
+    assert body["features"]["undo"] is False and body["features"]["serverOrderEta"] is True  # undo follows the sim flag
     assert set(body["season"]) == {"id", "startsAt", "endsAt"}
     assert body["season"]["endsAt"] - body["season"]["startsAt"] == 7 * 86_400_000
     assert body["snapshot"]["factory"]["name"] == "Ann" and body["snapshot"]["factory"]["credits"] == START_CREDITS
@@ -135,9 +135,9 @@ async def test_command_success_shape_and_persistence(game, fake_sim, clock):
     resp = await command(game, 0, key(1), place(3, 4))
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"ok", "version", "result", "events", "snapshot", "replayed"}
+    assert set(body) == {"ok", "version", "result", "events", "snapshot", "replayed", "toast"}  # S8: toast also top-level
     assert body["ok"] is True and body["version"] == 1 and body["replayed"] is False and body["events"] == []
-    assert body["result"] == {"toast": "Построено: filler"}
+    assert body["result"] == {"toast": "Построено: filler"} and body["toast"] == "Построено: filler"
     assert body["snapshot"]["factory"]["credits"] == START_CREDITS - PLACE_COST
 
     sent = fake_sim.bodies("/v1/command")[0]
@@ -191,13 +191,13 @@ async def test_stale_version_is_409_with_current_version(game, fake_sim):
     assert (await command(game, 0, key(1), place())).status_code == 200
     resp = await command(game, 0, key(2), place(2, 2))  # server is at 1
     err = assert_error(resp, 409, "version_conflict")
-    assert err["details"] == {"current_version": 1}
+    assert err["details"] == {"current_version": 1, "version": 1}  # `version` is what the web client reads
     assert len(fake_sim.bodies("/v1/command")) == 1  # never reached the sim
     row = await factory_row(game)
     assert row["version"] == 1 and row["credits"] == START_CREDITS - PLACE_COST
     assert [e["key"] for e in row["state"]["meta"]["idempotency"]] == [key(1)]  # the failed key is not recorded
     future = await command(game, 5, key(3), place(2, 2))
-    assert assert_error(future, 409, "version_conflict")["details"] == {"current_version": 1}
+    assert assert_error(future, 409, "version_conflict")["details"] == {"current_version": 1, "version": 1}
     # after resync the same key succeeds
     assert (await command(game, 1, key(2), place(2, 2))).json()["version"] == 2
 
@@ -387,18 +387,27 @@ async def test_submit_shift_validation_codes(game, cmd, code, reason):
 
 
 @pytest.mark.parametrize("cmd,reason", [
-    ({"type": "tick", "events": [], "from": 1000, "to": 2000}, "tick_removed"),
     ({"type": "undo"}, "history_unavailable"),
     ({"type": "redo"}, "history_unavailable"),
 ])
-async def test_tick_undo_redo_are_command_rejected(game, fake_sim, cmd, reason):
+async def test_undo_redo_rejection_of_the_sim_is_command_rejected(game, fake_sim, cmd, reason):
+    """The API has no special case for undo/redo: a sim without history in the state (fake_sim default) rejects them and
+    the reason passes through as 422 command_rejected. The real sim serves them (FakeSim.history_in_state = True)."""
     await bootstrap(game)
     err = assert_error(await command(game, 0, key(1), cmd), 422, "command_rejected")
     assert err["details"]["reason"] == reason and err["details"]["version"] == 0
     assert (await factory_row(game))["version"] == 0
     assert fake_sim.bodies("/v1/command")[0]["cmd"]["type"] == cmd["type"]
-    if cmd["type"] == "tick":  # wire name, not the python attribute
-        assert fake_sim.bodies("/v1/command")[0]["cmd"] == cmd and "from_" not in fake_sim.bodies("/v1/command")[0]["cmd"]
+
+
+async def test_tick_left_the_contract_it_is_a_validation_error_and_never_reaches_the_sim(game, fake_sim):
+    """`tick` was removed from the Command union (frontend revision 4): 422 validation_error, no sim call, no version bump."""
+    await bootstrap(game)
+    tick = {"type": "tick", "events": [], "from": 1000, "to": 2000}
+    err = assert_error(await command(game, 0, key(1), tick), 422, "validation_error")
+    assert err["details"]["errors"]
+    assert fake_sim.bodies("/v1/command") == []
+    assert (await factory_row(game))["version"] == 0
 
 
 # ================================================================ POST /api/command: validation
@@ -418,7 +427,6 @@ MINIMAL = {
         "difficulty": 1, "durationMs": 5000, "gameId": "g", "metrics": {}, "profession": "lab", "result": "win",
         "score": 0.5}},
     "dialogDone": {"id": "d"}, "factSeen": {"id": "f"}, "undo": {}, "redo": {}, "buildEnd": {}, "offlineSeen": {},
-    "tick": {"events": [], "from": 1, "to": 2},
 }
 
 
@@ -437,9 +445,9 @@ async def test_every_command_type_validates_and_is_forwarded_as_sent(game, fake_
             continue
         if resp.status_code == 200:
             version = resp.json()["version"]
-        else:  # rule rejection by the fake sim (tick/undo/redo/acceptOrder/...), never a validation error
+        else:  # rule rejection by the fake sim (undo/redo/acceptOrder/...), never a validation error
             assert resp.json()["error"]["code"] != "validation_error", (t, resp.text)
-        assert fake_sim.bodies("/v1/command")[-1]["cmd"] == cmd, t  # incl. tick.from and paint.color == null
+        assert fake_sim.bodies("/v1/command")[-1]["cmd"] == cmd, t  # incl. paint.color == null
     assert [c["cmd"]["type"] for c in fake_sim.bodies("/v1/command")] == [t for t in MINIMAL if t != "buildEnd"]
 
 
@@ -471,7 +479,7 @@ INVALID_BODIES = {
     "extra_field": _body(cmd={**place(), "free_money": 1}),
     "wrong_type": _body(cmd={**place(), "x": "left"}),
     "shift_missing_result": _body(cmd={"type": "submitShift", "buildingId": "b1"}),
-    "tick_bad_event": _body(cmd={"type": "tick", "events": [{"k": "nope"}], "from": 1, "to": 2}),
+    "tick_removed": _body(cmd={"type": "tick", "events": [], "from": 1, "to": 2}),
     "key_short": _body(idempotency_key="short"),
     "key_7": _body(idempotency_key="1234567"),
     "key_long": _body(idempotency_key="k" * 65),
@@ -527,7 +535,7 @@ async def test_key_may_use_uuid_unicode_and_separator_characters(game):
 def test_reject_nul_walks_nested_payloads():
     from app.bodies import reject_nul
     from app.errors import AppError
-    reject_nul({"type": "tick", "events": [{"k": "ok", "n": 1, "x": None}], "name": "fine"}, "cmd")
+    reject_nul({"type": "place", "path": [{"k": "ok", "n": 1, "x": None}], "name": "fine"}, "cmd")
     for bad in ({"a": "x\u0000"}, {"a": ["fine", {"b": "\u0000"}]}, {"a\u0000": 1}, ["\u0000"], "\u0000"):
         with pytest.raises(AppError) as exc:
             reject_nul(bad, "cmd")

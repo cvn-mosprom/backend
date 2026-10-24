@@ -96,7 +96,7 @@ Index("ix_factories_season_university", Factory.season_id, Factory.university)
 
 class Shift(Base):
     """Log of ACCEPTED submitShift commands, written in the transaction of the command (feeds HR analytics, S6).
-    The daily limit is not derived from here: it lives in factories.state (season.shiftsLeft)."""
+    The daily limit is not derived from here: it lives in factories.state (shiftsLeft / shiftsDay, schema v2)."""
 
     __tablename__ = "shifts"
 
@@ -149,6 +149,7 @@ class Lead(Base):
         sa.UniqueConstraint("user_id", "season_id", name="uq_leads_user_season"),
         sa.CheckConstraint("status in ('new','contacted','interview','rejected','hired')", name="status"),
         sa.CheckConstraint("practice_type is null or practice_type in ('paid','free','job')", name="practice_type"),
+        sa.CheckConstraint("institution_kind is null or institution_kind in ('vuz','college')", name="institution_kind"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -160,7 +161,8 @@ class Lead(Base):
     email: Mapped[str | None] = mapped_column(Text)
     telegram: Mapped[str | None] = mapped_column(Text)  # bare username, without '@'
     university: Mapped[str] = mapped_column(Text, nullable=False)
-    direction: Mapped[str | None] = mapped_column(Text)
+    institution_kind: Mapped[str | None] = mapped_column(Text)  # vuz | college (S9)
+    direction: Mapped[str | None] = mapped_column(Text)  # the human label of the form's `department`, or free text
     course: Mapped[str | None] = mapped_column(Text)
     vacancy: Mapped[str | None] = mapped_column(Text)  # profession id
     ready_from: Mapped[date | None] = mapped_column(sa.Date)

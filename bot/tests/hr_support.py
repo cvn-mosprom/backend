@@ -28,6 +28,7 @@ from sqlalchemy.pool import NullPool
 
 from app.config import Settings
 from app.hr import outbox, runtime
+from app.hr.format import QUIZ_QUESTION_IDS
 
 ROOT = Path(__file__).resolve().parents[2]
 API_DIR = ROOT / "api"
@@ -145,15 +146,16 @@ async def add_factory(s: AsyncSession, uid: int, season: int, name: str, stars: 
 
 async def add_lead(s: AsyncSession, uid: int, season: int, name: str, uni: str, *, status: str = "new",
                    tags: list[str] | None = None, revoked: bool = False, created: datetime | None = None, **kw: Any) -> int:
-    cols = {"phone": None, "email": None, "telegram": None, "direction": None, "course": None, "vacancy": None,
+    cols = {"phone": None, "email": None, "telegram": None, "institution_kind": None, "direction": None, "course": None, "vacancy": None,
             "readiness": None, "practice_type": None, "best_profession": None, "season_place": None, "quiz_score": None,
             "birth_date": None, "ready_from": None, "hr_note": None}
     cols.update(kw)
     return await x(s, """INSERT INTO leads (user_id, season_id, full_name, university, status, tags, consent, consent_at,
-        consent_text_version, consent_revoked_at, created_at, updated_at, phone, email, telegram, direction, course, vacancy,
+        consent_text_version, consent_revoked_at, created_at, updated_at, phone, email, telegram, institution_kind, direction,
+        course, vacancy,
         readiness, practice_type, best_profession, season_place, quiz_score, birth_date, ready_from, hr_note)
         VALUES (:u, :s, :n, :uni, :st, CAST(:tags AS text[]), true, :now, 'v1', :rev, :created, :created, :phone, :email,
-        :telegram, :direction, :course, :vacancy, :readiness, :practice_type, :best_profession, :season_place, :quiz_score,
+        :telegram, :institution_kind, :direction, :course, :vacancy, :readiness, :practice_type, :best_profession, :season_place, :quiz_score,
         :birth_date, :ready_from, :hr_note) RETURNING id""",
                    u=uid, s=season, n=name, uni=uni, st=status, tags=tags or [], now=NOW,
                    rev=NOW if revoked else None, created=created or NOW, **cols)
@@ -169,10 +171,13 @@ async def add_shift(s: AsyncSession, uid: int, season: int, created: datetime | 
                "VALUES (:u, :s, 'b1', 'operator', 'g1', 'win', 1, 5000, :c)", u=uid, s=season, c=created or NOW)
 
 
-async def add_quiz(s: AsyncSession, uid: int, correct: int, wrong: int) -> None:
+OLD_QUIZ_IDS = ("q1978", "q1979", "q1996", "q1999", "q2000", "q2003", "q2005", "q2013", "q2015", "q2022")
+
+
+async def add_quiz(s: AsyncSession, uid: int, correct: int, wrong: int, ids: tuple[str, ...] = QUIZ_QUESTION_IDS) -> None:
     for i in range(correct + wrong):
         await x(s, "INSERT INTO quiz_answers (user_id, question_id, correct, answer) VALUES (:u, :q, :c, 0)",
-                u=uid, q=f"q{i}", c=i < correct)
+                u=uid, q=ids[i], c=i < correct)
 
 
 async def seed_all(sm: async_sessionmaker[AsyncSession]) -> dict[str, int]:
@@ -213,19 +218,21 @@ async def seed_all(sm: async_sessionmaker[AsyncSession]) -> dict[str, int]:
         await add_shift(s, ids["b1"], 2)
         # leads: L(u1) new, L(u2) contacted, L(u3) revoked, one by a bot
         ids["l1"] = await add_lead(s, ids["u1"], 2, "Иванова Анна", "МГУПП", tags=["senior", "high_quiz"],
-                                   phone="+79991112233", email="anna@example.com", telegram="anna", direction="Пищевая инженерия",
+                                   phone="+79991112233", email="anna@example.com", telegram="anna", institution_kind="vuz", direction="Пищевая инженерия",
                                    course="4", vacancy="operator", readiness="season", practice_type="paid",
-                                   best_profession="lab", season_place=2, quiz_score=9, birth_date=datetime(2003, 5, 1).date(),
+                                   best_profession="lab", season_place=2, quiz_score=7, birth_date=datetime(2003, 5, 1).date(),
                                    created=NOW - timedelta(hours=3))
         ids["l2"] = await add_lead(s, ids["u2"], 2, "Петров Борис", "РХТУ", status="contacted", tags=["ready_for_season"],
-                                   phone="+79990000000", created=NOW - timedelta(hours=2))
+                                   phone="+79990000000", institution_kind="college", direction="Розлив", created=NOW - timedelta(hours=2))
         ids["l3"] = await add_lead(s, ids["u3"], 2, "Сидорова Вера", "МГУПП", tags=["senior"], revoked=True,
                                    phone="+79993334455", created=NOW - timedelta(hours=1))
         ids["lb"] = await add_lead(s, ids["b1"], 2, "Бот Ботов", "МГУПП", created=NOW)
-        # quiz: u1 finished (7 of 10 right), u2 started, a bot finished
-        await add_quiz(s, ids["u1"], 7, 3)
+        # quiz: u1 finished (7 of 8 right), u2 started, a bot finished; u4 only has answers of the old S5 bank (not counted)
+        await add_quiz(s, ids["u1"], 7, 1)
         await add_quiz(s, ids["u2"], 2, 1)
-        await add_quiz(s, ids["b1"], 10, 0)
+        await add_quiz(s, ids["b1"], 8, 0)
+        await add_quiz(s, ids["u4"], 10, 0, ids=OLD_QUIZ_IDS)
+        await add_quiz(s, ids["u2"], 5, 0, ids=OLD_QUIZ_IDS[:5])
     return ids
 
 

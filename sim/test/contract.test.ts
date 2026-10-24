@@ -43,8 +43,6 @@ describe('snapshot matches contract/schema/snapshot.schema.json', { skip: noSche
 		check(ok.snapshot, 'command ok');
 		const rejected = await command(built.state, built.now + 1000, { type: 'renameFactory', name: 'x' });
 		check(rejected.snapshot, 'command rejected');
-		const tick = await command(built.state, built.now + 1000, { type: 'tick', from: 0, to: 1, events: [] });
-		check(tick.snapshot, 'tick_removed');
 		const dock = (built.state as any).sim.layout.buildings.find((b: any) => b.kind === 'dock');
 		const order = (built.state as any).sim.orders[0];
 		const acc = await command(built.state, built.now + 2000, { type: 'acceptOrder', orderId: order.id, dockId: dock.id });

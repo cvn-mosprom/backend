@@ -40,7 +40,7 @@ try:  # the correct quiz options are NOT public: read them from the bank source 
     sys.path.insert(0, str(ROOT / "api"))
     from app import quiz_bank
 
-    CORRECT = {q.id: q.correct for q in quiz_bank.QUESTIONS}
+    CORRECT = {q.id: q.correct_id for q in quiz_bank.QUESTIONS}  # S9: option ids a|b|c
 except Exception:  # pragma: no cover - then the quiz is answered with 0 and only checked for consistency
     CORRECT = {}
 
@@ -188,23 +188,26 @@ def test_demo_path_end_to_end(api: SmokeApi):
     # quiz in two batches
     q = api.http.get("/api/quiz/questions").json()
     ids = [x["id"] for x in q["questions"]]
-    assert len(ids) == 10 and q["progress"]["answered"] == 0 and "correct" not in json.dumps(q)
-    answers = [{"questionId": i, "answer": CORRECT.get(i, 0)} for i in ids]
+    assert len(ids) == 8 and q["progress"]["answered"] == 0 and "correct" not in json.dumps(q["questions"])
+    answers = [{"question_id": i, "answer": CORRECT.get(i, 0)} for i in ids]
     r1 = api.http.post("/api/quiz/answer", json={"answers": answers[:4]})
     assert r1.status_code == 200 and r1.json()["answered"] == 4 and r1.json()["completed"] is False
     r2 = api.http.post("/api/quiz/answer", json=answers[4:])
     assert r2.status_code == 200 and r2.json()["completed"] is True
-    score = r2.json()["score"]
-    assert score == sum(x["correct"] for x in r1.json()["results"] + r2.json()["results"])
+    correct = r2.json()["correct"]
+    assert correct == sum(x["correct"] for x in r1.json()["results"] + r2.json()["results"])
+    assert r2.json()["total"] == 8 and r2.json()["score"] == round(100 * correct / 8)
     if CORRECT:
-        assert score == 10
-    assert api.http.get("/api/season/summary").json()["quizResult"] == {"score": score, "answered": 10, "total": 10, "completed": True}
+        assert correct == 8 and r2.json()["score"] == 100
+    assert api.http.get("/api/season/summary").json()["quizResult"] == {
+        "correct": correct, "total": 8, "score": r2.json()["score"], "answered": 8, "completed": True, "bankTotal": 8}
+    score = correct
 
     # lead -> leads/me -> summary status -> events -> revoke (idempotent)
     r = api.http.post("/api/leads", json=lead_body())
     assert r.status_code == 201, r.text
     lead = r.json()
-    assert lead["status"] == "new" and lead["quizScore"] == score and ("high_quiz" in lead["tags"]) is (score >= 8)
+    assert lead["status"] == "new" and lead["quizScore"] == score and ("high_quiz" in lead["tags"]) is (score >= 6)
     mine = api.http.get("/api/leads/me").json()
     assert mine["id"] == lead["id"] and "hrNote" not in mine and mine["consentRevokedAt"] is None
     assert api.http.get("/api/season/summary").json()["leadStatus"] == "new"
@@ -299,7 +302,7 @@ def test_wrong_version_is_409_and_does_not_burn_the_key(api: SmokeApi, stale: in
     key = uuid.uuid4().hex
     r = api.send(belt(1, 2), version=stale, key=key)
     assert r.status_code == 409 and r.json()["error"]["code"] == "version_conflict", r.text
-    assert r.json()["error"]["details"] == {"current_version": 1}
+    assert r.json()["error"]["details"] == {"current_version": 1, "version": 1}
     me = api.me()
     assert me["version"] == 1 and tiles(me["snapshot"]) == 1 and credits_of(me["snapshot"]) == START_CREDITS - BELT_COST
     ok = api.send(belt(1, 2), version=1, key=key)  # the 409 recorded nothing: the same key now applies, once
@@ -438,13 +441,13 @@ def test_duplicate_lead_and_revoke_from_three_tabs(api: SmokeApi):
 def test_duplicate_quiz_submit_from_three_tabs(api: SmokeApi):
     tabs = [api] + [api.clone() for _ in range(2)]
     ids = [q["id"] for q in api.http.get("/api/quiz/questions").json()["questions"]]
-    answers = [{"questionId": i, "answer": CORRECT.get(i, 0)} for i in ids]
+    answers = [{"question_id": i, "answer": CORRECT.get(i, 0)} for i in ids]
     res = par([lambda t=t: t.http.post("/api/quiz/answer", json=answers) for t in tabs])
     assert sorted(r.status_code for r in res) == [200, 409, 409]
     assert {code_of(r) for r in res if r.status_code == 409} == {"quiz_already_completed"}
     progress = api.http.get("/api/quiz/questions").json()["progress"]
-    assert progress["answered"] == 10 and progress["completed"] is True
-    assert progress["score"] == next(r.json() for r in res if r.status_code == 200)["score"]
+    assert progress["answered"] == 8 and progress["completed"] is True
+    assert progress["score"] == next(r.json() for r in res if r.status_code == 200)["score"] == 100
 
 
 def test_clients_that_hang_up_before_the_response_then_resend(api: SmokeApi):
@@ -668,11 +671,11 @@ def test_advance_bad_bodies(api: SmokeApi, body):
 @pytest.mark.parametrize("path,kwargs,code", [
     ("/api/quiz/answer", dict(json="x"), "validation_error"),
     ("/api/quiz/answer", dict(json=[]), "validation_error"),
-    ("/api/quiz/answer", dict(json=[{"questionId": "q1978", "answer": True}]), "invalid_answer_format"),
-    ("/api/quiz/answer", dict(json=[{"questionId": "q1978", "answer": 1.5}]), "invalid_answer_format"),
-    ("/api/quiz/answer", dict(json=[{"questionId": "q1978", "answer": 10**30}]), "invalid_answer_format"),
-    ("/api/quiz/answer", dict(json=[{"questionId": "q1978", "answer": 0}] * 11), "validation_error"),
-    ("/api/quiz/answer", dict(json=[{"questionId": "q1978", "answer": 0}] * 2), "validation_error"),  # duplicate id
+    ("/api/quiz/answer", dict(json=[{"question_id": "q_year", "answer": True}]), "invalid_answer_format"),
+    ("/api/quiz/answer", dict(json=[{"question_id": "q_year", "answer": 1.5}]), "invalid_answer_format"),
+    ("/api/quiz/answer", dict(json=[{"question_id": "q_year", "answer": 10**30}]), "invalid_answer_format"),
+    ("/api/quiz/answer", dict(json=[{"question_id": "q_year", "answer": 0}] * 11), "validation_error"),
+    ("/api/quiz/answer", dict(json=[{"question_id": "q_year", "answer": 0}] * 2), "validation_error"),  # duplicate id
     ("/api/quiz/answer", dict(json=[{"questionId": "q\u0000", "answer": 0}]), "validation_error"),
     ("/api/quiz/answer", dict(content=b"\xff\xfe", headers=J), "validation_error"),
     ("/api/events", dict(json={"events": [{"name": "a\u0000"}]}), "validation_error"),
@@ -736,14 +739,14 @@ def test_request_id_is_echoed_or_replaced(api: SmokeApi):
 
 
 def test_fuzz_every_command_type_with_poison_never_5xx(new_user):
-    """All 28 Command types x (minimal, 3 poisoned variants): validation_error / command_rejected / ok - fast, never a 5xx."""
+    """All 27 Command types x (minimal, 3 poisoned variants): validation_error / command_rejected / ok - fast, never a 5xx."""
     schema = json.loads((ROOT / "contract" / "schema" / "command.schema.json").read_text(encoding="utf-8"))
     defs = schema["definitions"]
     types = {}
     for d in defs["Command"]["oneOf"]:
         o = d if "properties" in d else defs[d["$ref"].split("/")[-1]]
         types[o["properties"]["type"]["const"]] = [k for k in o["properties"] if k != "type"]
-    assert len(types) >= 28
+    assert len(types) >= 27
     poison = [1e30, -1, 0.5, "x" * 3000, None, [], {}, True, "\u0000", [{}] * 50, "../../etc/passwd", {"__proto__": {"x": 1}}]
     rnd = random.Random(7)
     users = [new_user(), new_user()]  # two players: 112 commands would sit right at one player's rate limit
@@ -830,7 +833,7 @@ def test_player_data_is_isolated_between_users(new_user):
     a.bootstrap()
     b.bootstrap()
     assert a.http.post("/api/leads", json=lead_body()).status_code == 201
-    first = [{"questionId": i, "answer": CORRECT.get(i, 0)} for i in [q["id"] for q in a.http.get("/api/quiz/questions").json()["questions"]][:3]]
+    first = [{"question_id": i, "answer": CORRECT.get(i, 0)} for i in [q["id"] for q in a.http.get("/api/quiz/questions").json()["questions"]][:3]]
     assert a.http.post("/api/quiz/answer", json=first).status_code == 200
     assert b.http.get("/api/leads/me").status_code == 404 and b.http.delete("/api/leads/me").status_code == 404
     assert b.http.get("/api/quiz/questions").json()["progress"]["answered"] == 0
@@ -894,7 +897,7 @@ def test_sim_outage_mixed_traffic_and_recovery(new_user):
         assert a.http.post("/api/leads", json=lead_body()).status_code == 201
         assert a.http.get("/api/leads/me").status_code == 200
         assert a.http.get("/api/quiz/questions").status_code == 200
-        assert a.http.post("/api/quiz/answer", json=[{"questionId": "q1978", "answer": 0}]).status_code == 200
+        assert a.http.post("/api/quiz/answer", json=[{"question_id": "q_year", "answer": 1}]).status_code == 200
         assert a.http.post("/api/events", json={"events": [ev()]}).status_code == 200
         assert a.http.get("/health").status_code == 200
         codes = Counter()

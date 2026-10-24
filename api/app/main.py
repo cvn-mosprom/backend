@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
 from .db import make_engine, make_redis, make_sessionmaker
@@ -16,6 +17,12 @@ from .settings import Settings, get_settings
 from .sim_client import SimClient
 
 log = logging.getLogger("mosprom.app")
+
+# http-contract.md "Общее": the web client sends X-Telegram-Init-Data / X-Dev-User / Content-Type and reads Retry-After
+CORS_METHODS = ["GET", "POST", "DELETE"]
+CORS_HEADERS = ["X-Telegram-Init-Data", "X-Dev-User", "Content-Type", "Authorization"]
+CORS_EXPOSE = ["Retry-After", "X-Request-ID"]
+CORS_MAX_AGE = 600
 
 
 @asynccontextmanager
@@ -56,6 +63,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # outermost: request id, access log, 5 s request cap (not /internal/*), slow-request log, last-resort 500
     app.add_middleware(RequestContextMiddleware, request_timeout_s=settings.request_timeout_s,
                        slow_ms=settings.slow_request_ms)
+    # S8: added LAST = outermost, so 4xx / 429 / 5xx / timeout answers built by the layers below still carry CORS headers
+    # (else the browser reports them as a bare "network error"), and a preflight OPTIONS is answered here, before
+    # auth, the rate limiter and the request timeout ever run.
+    app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_methods=CORS_METHODS,
+                       allow_headers=CORS_HEADERS, expose_headers=CORS_EXPOSE, max_age=CORS_MAX_AGE)
 
     app.include_router(health.router)
     app.include_router(me.router)

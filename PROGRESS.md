@@ -26,7 +26,11 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - Background advance (S4 top-200) overwrites unseen `offline` report every run -> pass reason and keep/accumulate the first report.
 - Mock season roll runs inside bootstrap/advance; S4 server-side rotation must override/align season fields in state.
 - Command after >8 h gap: sim runs capped bootstrap first, then the command.
+- Integration S8 done: X-Telegram-Init-Data / X-Dev-User auth, CORS (CORS_ORIGINS), advance heartbeat/order_due, 409 details.version, ?start_param=, features quiz/leads, top-level toast/rewards/snapshot.
+- Integration S9 done: client LeadForm shape (aliases, department ids, institution_kind, migration 0008), LeadInfo with ms createdAt, one quiz bank generated from vendor quiz.ts (scripts/gen_quiz_bank.py --check), client quiz response.
+- Integration S11+S12 done: submodule at frontend main 422b6fc, contract regenerated (27 commands, tick -> 422), sim on $lib/core (migrateState v1->v2, undo/redo live, etaAt, features.undo/serverOrderEta true), 150 KB audit enforced (31 KB).
+- Tests now: api 783 (SIM_URL), sim 103, contract 200, bot 99, e2e 210.
 
 ## Next
-- All planned sprints done. Waiting for the lead: S1 (order ETA in snapshot -> make field required, regenerate contract via contract/generate.sh) and S1U (undo diffs -> remove undo/redo from sim REJECTED_COMMANDS). Frontend: plug clients/web/HttpGameApi.ts.
-- Migration ids are short: next is "0007" with down_revision "0006".
+- S10: contract test with the real vendor HttpGameApi against the live stack; retire clients/web; align ARCHITECTURE to http-contract.md.
+- S13: Caddy serves the web build, events accept known/drop unknown, mark/exclude e2e test users, README/PROGRESS/ARCHITECTURE refresh, events limit vs client 12/min.

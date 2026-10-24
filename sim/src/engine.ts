@@ -1,171 +1,154 @@
 // Sim operations behind the HTTP API: bootstrap / command / advance / snapshot.
 // Everything is a pure function of (state, now, input) -> (state', output); no state is kept between calls.
+//
+// The game itself is `$lib/core` of the vendored frontend (vendor/frontend/web/src/lib/core/README.md): the same pure
+// functions the frontend's reference server runs (core/http/fakeApi.ts), so client and server count bit for bit.
+// This module is the thin wrapper the HTTP API needs around it:
+//   - every state is loaded through `migrateState` (lazily, on a copy; the API persists the migrated state with its next
+//     write, there is no bulk migration), unknown top-level fields (`meta.idempotency`, `meta.speed`, ...) ride along;
+//   - time is a parameter, and `max(now, state.lastTick)` is applied by EVERY entry point (the factory clock never runs
+//     backwards: a request stamped before `lastTick` is served as if it arrived at `lastTick`; the shift counter would
+//     otherwise be re-granted whenever a caller's clock crosses MSK midnight in the wrong direction);
+//   - the offline report of a `background` advance accumulates instead of being replaced (the core replaces);
+//   - `submitShift` plausibility (minigame_too_short / impossible_score) is decided here, before the core, like the
+//     reference server does; the other rejection codes come from the core's `r.code` (reasons.ts keeps a text fallback).
 
-import type { Command, CommandResult, GameSnapshot } from '$lib/api/types';
+import type { Command, GameSnapshot, OfflineReport } from '$lib/api/types';
 import { OFFLINE_CAP_H } from '$lib/content/balance';
-import { advance as advanceSim } from '$lib/sim/advance';
-import type { SimState } from '$lib/sim/economy';
-import type { MockGameApi } from '$lib/api/mock/MockGameApi';
-import { withMock, type StateObject } from './host';
-import { rejectionCode, type RejectionReason } from './reasons';
+import { STATE_V, advanceState, applyCommand, freshState, migrateState, snapshotOf, type FactoryState, type Rewards } from '$lib/core';
+import { rejectionCode } from './reasons';
 
 const H = 3600_000;
+/** Shortest believable minigame round (core/core.ts `shift`: `durationMs < 400`). */
+const SHIFT_MIN_MS = 400;
+
+/** Persisted factory state as the API stores it: the core's `FactoryState` plus unknown top-level fields. */
+export type StateObject = Record<string, unknown>;
 
 export interface PlayerInfo {
 	id: string;
 	tgId?: number;
 	name: string;
 	username?: string;
+	/** First-touch source (start_param); only used when the factory is created. */
+	source?: string;
 }
 
 export interface CommandOutcome {
 	ok: boolean;
-	/** Rejections only: the mock's original (Russian) message. */
+	/** Rejections only: the core's original (Russian) message. */
 	error?: string;
-	/** Rejections only: stable machine reason (reasons.ts). */
-	code?: RejectionReason;
+	/** Rejections only: stable machine reason (core `r.code`, else reasons.ts). */
+	code?: string;
 	toast?: string;
-	rewards?: { credits?: number; stars?: number; xp?: number; unlocked?: string[] };
+	rewards?: Rewards;
 }
 
-/** The unseen offline report kept in `state.offline` (api/types.ts OfflineReport). */
-interface OfflineReport {
-	hours: number;
-	capped: boolean;
-	producedBottles: number;
-	producedBoxes: Record<string, number>;
-	creditsSpent: number;
-	broken: string[];
-	storageFull: boolean;
-}
+/** The stored state cannot be brought to the current schema (corrupt, or newer than this core). The API sent garbage: 400. */
+export class StateError extends Error {}
 
-/** The slice of MockState the engine reads or patches; everything else is opaque. */
-interface StateView {
-	lastTick: number;
-	prodAt?: number;
-	sim: SimState;
-	season: { endsAt: number };
-	offline?: OfflineReport;
-}
-const view = (s: StateObject) => s as unknown as StateView;
+/** Commands the sim understands: the `Command` union of the vendored types.ts (`tick` left it in frontend revision 4). */
+export const COMMAND_TYPES: ReadonlySet<string> = new Set<Command['type']>([
+	'ageConfirm', 'renameFactory', 'setUniversity', 'place', 'placeConveyor', 'rerouteConveyor', 'remove', 'move', 'rotate',
+	'configure', 'upgrade', 'upgradeConveyor', 'repair', 'expandHangar', 'paint', 'acceptOrder', 'cancelOrder', 'sellMarket',
+	'takeLoan', 'repayLoan', 'submitShift', 'dialogDone', 'factSeen', 'undo', 'redo', 'buildEnd', 'offlineSeen'
+]);
+
+/**
+ * True: undo/redo are served from `state.history` (core/core.ts, sim/history.ts), which lives inside the state and
+ * survives between stateless requests. Reported by `/health` as `historyInState`; the API turns it into `features.undo`.
+ */
+export const HISTORY_IN_STATE = true;
+
+/** Schema version of the states this core writes (`FactoryState.v`). */
+export const STATE_VERSION: number = STATE_V;
 
 /**
  * Effective server time of a request: `max(now, state.lastTick)`. Applied by EVERY entry point (snapshot, bootstrap,
- * command, advance). The factory clock never runs backwards: a request stamped before `lastTick` is served as if it
- * arrived at `lastTick`. Without it the mock's day roll (`shiftsDay !== mskDay(now)` -> `shiftsLeft = 5`) would hand out
- * fresh shifts every time the caller's clock crosses MSK midnight in the wrong direction. The shift counter itself lives
- * in the persisted state (`season.shiftsLeft` / `season.shiftsDay`), so this guard is all the limit needs.
+ * command, advance). The core takes `now` as given and would run a negative interval for an earlier one.
  */
-export const effectiveNow = (s: StateObject, now: number): number => Math.max(now, view(s).lastTick);
-
-/** Server moment up to which the factory has been accounted: `min(prodAt ?? lastTick, lastTick)` (MockGameApi.tick). */
-export const accountedTo = (s: StateObject): number => {
-	const v = view(s);
-	return Math.min(v.prodAt ?? v.lastTick, v.lastTick);
-};
-
-/** Commands that exist in the `Command` union but are not served by the sim. */
-const REJECTED_COMMANDS: Record<string, RejectionReason> = {
-	// `tick` (client discrete simulation) is removed from the contract; the server is purely analytic.
-	tick: 'tick_removed',
-	// Undo history lives in MockGameApi.hist (memory only) and cannot survive between stateless requests until it is
-	// migrated into the state (spec: principle 7). Remove these two entries when the migration lands.
-	undo: 'history_unavailable',
-	redo: 'history_unavailable'
-};
+export const effectiveNow = (s: object, now: number): number => Math.max(now, (s as { lastTick: number }).lastTick);
 
 /**
- * True once undo/redo are served from a history that lives inside the state (S1U): reported by `/health` as
- * `historyInState`, and the API turns it into `features.undo`. Derived from REJECTED_COMMANDS, so removing the two
- * entries above flips it with no other edit.
+ * A working copy of a stored state, migrated to the current schema (`migrateState`: v1 -> v2 moves the shift counter out of
+ * `season`, adds `history`, upgrades a 12x10 hangar). The caller's object is never touched; the core then mutates the copy.
+ * v1 leftovers of the old MockGameApi host that nothing reads any more (`clock`, `lastSeenReal`) are dropped; every other
+ * unknown top-level field is kept as is.
  */
-export const HISTORY_IN_STATE: boolean = !Object.hasOwn(REJECTED_COMMANDS, 'undo') && !Object.hasOwn(REJECTED_COMMANDS, 'redo');
-
-/** Pure read of the snapshot at `now`: no catch-up, nothing persisted. */
-export async function snapshot(state: StateObject, now: number): Promise<GameSnapshot> {
-	const { value } = await withMock(state, effectiveNow(state, now), (mock) => (mock as unknown as { snap(): GameSnapshot }).snap());
-	return value;
+export function loadState(raw: StateObject): FactoryState {
+	const s = structuredClone(raw);
+	const was = typeof s.v === 'number' ? s.v : 1;
+	let st: FactoryState;
+	try {
+		st = migrateState(s);
+	} catch (e) {
+		throw new StateError(e instanceof Error ? e.message : String(e));
+	}
+	if (was < STATE_V) {
+		delete s.clock;
+		delete s.lastSeenReal;
+	}
+	return st;
 }
 
-/** Fresh factory for `player`, or the lazy 8 h offline catch-up of an existing one (MockGameApi.bootstrap). */
-export async function bootstrap(
+const out = (s: FactoryState): StateObject => s as unknown as StateObject;
+
+/**
+ * The snapshot the client gets. No leaderboard is passed: the API replaces `rank` with the real place in every response
+ * (game.py `_set_rank`), and the core's own rank would rank the player against ~1300 generated bots on every call.
+ */
+const snap = (s: FactoryState, now: number): GameSnapshot => snapshotOf(s, now, { tab: 'general', rows: [], total: 0, inviteCutoff: 0 });
+
+/** Pure read of the snapshot at `now`: no catch-up, nothing persisted. */
+export function snapshot(state: StateObject, now: number): GameSnapshot {
+	const s = loadState(state);
+	return snap(s, effectiveNow(s, now));
+}
+
+/** Fresh factory for `player`, or the lazy offline catch-up (cap 8 h) of an existing one (fakeApi `bootstrap`). */
+export function bootstrap(
 	state: StateObject | null,
 	now: number,
 	player?: PlayerInfo
-): Promise<{ state: StateObject; snapshot: GameSnapshot }> {
+): { state: StateObject; snapshot: GameSnapshot } {
+	let s: FactoryState;
 	if (state) {
-		const r = await catchUp(state, now, OFFLINE_CAP_H);
-		return { state: r.state, snapshot: r.snapshot };
+		s = loadState(state);
+		now = effectiveNow(s, now);
+	} else {
+		if (!player) throw new Error('player is required to create a factory');
+		const init: Parameters<typeof freshState>[0] = { id: player.id, name: player.name };
+		if (player.tgId !== undefined) init.tgId = player.tgId;
+		if (player.username !== undefined) init.username = player.username;
+		if (player.source !== undefined) init.source = player.source;
+		s = freshState(init, now);
 	}
-	if (!player) throw new Error('player is required to create a factory');
-	const { value, state: created } = await withMock(null, now, async (mock) => {
-		const p: Record<string, unknown> = { id: player.id, name: player.name };
-		if (player.tgId !== undefined) p.tgId = player.tgId;
-		if (player.username !== undefined) p.username = player.username;
-		mock.setPlayer(p);
-		return mock.bootstrap();
-	});
-	return { state: created, snapshot: value };
+	advanceState(s, now, { offlineReport: true });
+	return { state: out(s), snapshot: snap(s, now) };
 }
+
+/** `capHours` is the number of hours the factory works without the player; it can only lower the core's own 8 h. */
+const clampCap = (capHours: number | undefined): number =>
+	capHours === undefined || !Number.isFinite(capHours) ? OFFLINE_CAP_H : Math.min(Math.max(capHours, 0), OFFLINE_CAP_H);
 
 /**
- * Lazy catch-up to `now` (the mock's bootstrap path: tick(offlineAllowed) + season roll + snapshot).
- *
- * Offline cap: the mock produces for at most OFFLINE_CAP_H hours after the last accounted moment and keeps the factory
- * halted (time passes, orders burn, no output) for the rest. `capHours` can only lower that:
- *   - capHours >= OFFLINE_CAP_H, or the gap fits into the cap: plain mock bootstrap;
- *   - otherwise three steps that reproduce the mock's own "produce, then halted" split at `from + capHours`:
- *       1. mock bootstrap at `from + capHours`  (full production for the capped window + offline report),
- *       2. `advance(sim, from + capHours, now, { halted: true })` from the vendored lib (orders burn, no output),
- *       3. mock bootstrap at `now` (gap is 0: day roll, orders refill, level-up, season roll, snapshot).
- *     The offline report of step 1 is patched to `hours = capHours, capped = true`.
- * `advancedMs` is the whole accounted interval `max(0, now - from)`, including the halted part.
+ * Lazy catch-up to `now` with an offline report: production for at most `capHours` after the last accounted moment, then
+ * the factory stands still (time passes, orders burn, nothing is produced). `advancedMs` is the whole accounted interval
+ * `max(0, now - lastTick)`, including the halted part.
  */
-export async function catchUp(
+export function catchUp(
 	state: StateObject,
 	now: number,
-	capHours: number = OFFLINE_CAP_H
-): Promise<{ state: StateObject; snapshot: GameSnapshot; advancedMs: number }> {
-	now = effectiveNow(state, now);
-	const from = accountedTo(state);
-	const advancedMs = Math.max(0, now - from);
-	const cap = Number.isFinite(capHours) ? Math.min(Math.max(capHours, 0), OFFLINE_CAP_H) : OFFLINE_CAP_H;
-	const capMs = cap * H;
-
-	if (cap >= OFFLINE_CAP_H || advancedMs <= capMs) {
-		const { value, state: out } = await withMock(state, now, (mock) => mock.bootstrap());
-		return { state: out, snapshot: value, advancedMs };
-	}
-
-	// ---- capped below the mock's own cap ----
-	const t1 = from + capMs;
-	let mid: StateObject = state;
-	const prevOffline = (state as { offline?: unknown }).offline;
-	if (capMs > 0) {
-		// detect a report produced by this catch-up: start from a state without one
-		const clean: StateObject = { ...state };
-		delete clean.offline;
-		mid = (await withMock(clean, t1, (mock) => mock.bootstrap())).state;
-		const v = view(mid);
-		if (v.offline) {
-			v.offline.hours = cap;
-			v.offline.capped = true;
-		} else if (prevOffline !== undefined) {
-			(mid as { offline?: unknown }).offline = prevOffline;
-		}
-	} else {
-		mid = structuredClone(state);
-	}
-	// the factory stands still for the rest of the interval: time passes, deadlines burn, nothing is produced
-	const m = view(mid);
-	advanceSim(m.sim, Math.max(t1, from), now, { halted: true, seasonOpen: now < m.season.endsAt });
-	m.lastTick = now;
-	m.prodAt = now;
-	const { value, state: out } = await withMock(mid, now, (mock) => mock.bootstrap());
-	return { state: out, snapshot: value, advancedMs };
+	capHours?: number
+): { state: StateObject; snapshot: GameSnapshot; advancedMs: number } {
+	const s = loadState(state);
+	now = effectiveNow(s, now);
+	const advancedMs = now - s.lastTick;
+	advanceState(s, now, { capHours: clampCap(capHours), offlineReport: true });
+	return { state: out(s), snapshot: snap(s, now), advancedMs };
 }
 
-/** Why the caller advances the factory (`/v1/advance` `reason`). Anything but `background` behaves like the mock. */
+/** Why the caller advances the factory (`/v1/advance` `reason`). Anything but `background` is a plain catch-up. */
 export type AdvanceReason = 'resume' | 'manual' | 'background';
 
 /**
@@ -193,49 +176,63 @@ export function mergeOffline(prev: OfflineReport, cur: OfflineReport): OfflineRe
  * - `background` (a lazy catch-up while the player is away): an unseen `state.offline` is never replaced by a smaller one,
  *   the report of this step is merged into it (`mergeOffline`). The step runs from a state without the old report so a
  *   report produced by the step itself can be told apart; without a new one the old report is put back untouched.
- * - `resume` / `manual` / absent: plain catch-up (a new report replaces the old one, as in the mock).
+ *   The core replaces the report, so this stays in the wrapper.
+ * - `resume` / `manual` / absent: plain catch-up (a new report replaces the old one).
  */
-export async function advance(
+export function advance(
 	state: StateObject,
 	now: number,
 	opts: { capHours?: number; reason?: AdvanceReason | string } = {}
-): Promise<{ state: StateObject; snapshot: GameSnapshot; advancedMs: number }> {
-	const prev = view(state).offline;
-	if (opts.reason !== 'background' || !prev) return catchUp(state, now, opts.capHours);
-	const clean: StateObject = { ...state };
-	delete clean.offline;
-	const r = await catchUp(clean, now, opts.capHours);
-	const out = view(r.state);
-	out.offline = out.offline ? mergeOffline(prev, out.offline) : prev;
-	return { ...r, snapshot: { ...r.snapshot, offline: out.offline as GameSnapshot['offline'] } };
+): { state: StateObject; snapshot: GameSnapshot; advancedMs: number } {
+	const s = loadState(state);
+	now = effectiveNow(s, now);
+	const advancedMs = now - s.lastTick;
+	const prev = opts.reason === 'background' ? s.offline : undefined;
+	if (prev) delete s.offline;
+	advanceState(s, now, { capHours: clampCap(opts.capHours), offlineReport: true });
+	if (prev) s.offline = s.offline ? mergeOffline(prev, s.offline) : prev;
+	return { state: out(s), snapshot: snap(s, now), advancedMs };
 }
 
-/** Apply a player command (MockGameApi.command: lazy catch-up, apply, level-up). */
-export async function command(
+type CoreOutcome = ReturnType<typeof applyCommand>;
+
+/**
+ * `submitShift` anti-cheat, in the order of the reference server (core/http/fakeApi.ts): a round shorter than 400 ms is
+ * `minigame_too_short`, a score outside 0..1 is `impossible_score`. The core itself only says "Смена не засчитана".
+ */
+function shiftPlausibility(cmd: Command): CoreOutcome | undefined {
+	if (cmd.type !== 'submitShift') return undefined;
+	const r = cmd.result;
+	if (!(typeof r?.durationMs === 'number' && r.durationMs >= SHIFT_MIN_MS)) {
+		return { ok: false, error: 'Смена не засчитана: слишком быстро', code: 'minigame_too_short' };
+	}
+	if (!(typeof r.score === 'number' && r.score >= 0 && r.score <= 1)) {
+		return { ok: false, error: 'Смена не засчитана', code: 'impossible_score' };
+	}
+	return undefined;
+}
+
+/**
+ * Apply a player command (core `applyCommand`: lazy catch-up to `now`, the command, level-up, order schedule).
+ * A rejection keeps the catch-up (the time has passed) and changes nothing else; the snapshot is the fresh one.
+ */
+export function command(
 	state: StateObject,
 	now: number,
 	cmd: Command
-): Promise<{ state: StateObject; result: CommandOutcome; snapshot: GameSnapshot }> {
-	now = effectiveNow(state, now);
-	const reason = Object.hasOwn(REJECTED_COMMANDS, cmd.type) ? REJECTED_COMMANDS[cmd.type] : undefined;
-	if (reason) return { state, result: { ok: false, error: reason, code: reason }, snapshot: await snapshot(state, now) };
-
-	// The mock's command() catches up with tick(false), which is NOT capped (it is meant for a client that was just
-	// bootstrapped). A command arriving after a long idle gap must not turn into an uncapped offline catch-up, so a
-	// gap beyond the cap goes through the capped path first (offline report included).
-	let s = state;
-	if (now - accountedTo(s) > OFFLINE_CAP_H * H) s = (await catchUp(s, now, OFFLINE_CAP_H)).state;
-
-	const { value, state: out } = await withMock(s, now, (mock: MockGameApi) => mock.command(cmd));
-	const { snapshot: snap, ...result } = value as CommandResult & { snapshot?: GameSnapshot };
-	const outcome = result as CommandOutcome;
-	if (!outcome.ok) outcome.code = rejectionCode(outcome.error, cmd);
-	return { state: out, result: outcome, snapshot: snap as GameSnapshot };
+): { state: StateObject; result: CommandOutcome; snapshot: GameSnapshot } {
+	const s = loadState(state);
+	now = effectiveNow(s, now);
+	// A command arriving after a gap beyond the cap first goes through the capped catch-up WITH the offline report
+	// (the player was away): the core's applyCommand catches up too, but silently.
+	if (now - s.lastTick > OFFLINE_CAP_H * H && cmd.type !== 'offlineSeen') advanceState(s, now, { offlineReport: true });
+	const refused = shiftPlausibility(cmd);
+	if (refused) advanceState(s, now);
+	const r = refused ?? applyCommand(s, cmd, now);
+	const result: CommandOutcome = r.ok ? { ok: true } : { ok: false, error: r.error, code: r.code ?? rejectionCode(r.error) };
+	if (r.ok) {
+		if (r.toast !== undefined) result.toast = r.toast;
+		if (r.rewards !== undefined) result.rewards = r.rewards;
+	}
+	return { state: out(s), result, snapshot: snap(s, now) };
 }
-
-/** Commands the sim understands (the `Command` union; `tick` is listed so it can be answered with `tick_removed`). */
-export const COMMAND_TYPES: ReadonlySet<string> = new Set<Command['type']>([
-	'ageConfirm', 'renameFactory', 'setUniversity', 'place', 'placeConveyor', 'rerouteConveyor', 'remove', 'move', 'rotate',
-	'configure', 'upgrade', 'upgradeConveyor', 'repair', 'expandHangar', 'paint', 'acceptOrder', 'cancelOrder', 'sellMarket',
-	'takeLoan', 'repayLoan', 'submitShift', 'dialogDone', 'factSeen', 'undo', 'redo', 'buildEnd', 'offlineSeen', 'tick'
-]);

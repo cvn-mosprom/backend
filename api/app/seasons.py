@@ -1,21 +1,21 @@
 """Server-side season rotation (spec block 5, S4 part B).
 
-Seasons are global and live in the `seasons` table. The rules mirror MockGameApi:
+Seasons are global and live in the `seasons` table. The rules mirror the game core (vendor/frontend lib/core/core.ts, `rollSeason`):
   * a season is closed when `now >= ends_at` (`closed=true`, `closed_at`), and its final standings are frozen into
     `season_results` (general ranking: stars desc, user id asc; bots only while BOTS_ENABLED);
-  * the next season opens SEASON_ROLL_H hours after `ends_at` (the mock: `now - endsAt >= SEASON_ROLL_H * H`), starts
+  * the next season opens SEASON_ROLL_H hours after `ends_at` (the core: `now - endsAt >= SEASON_ROLL_H * H`), starts
     at the moment it is opened and lasts SEASON_DAYS (vendor/frontend content/balance.ts);
   * `rotate()` is idempotent and race-safe (pg_advisory_xact_lock + re-check under the lock). It never locks factory
     rows (results come from a plain read), so it can run inside a factory write transaction without deadlocks.
     Factories are NOT bulk-updated: a factory moves to the new season lazily, when it is next loaded under its row lock
-    (`align_state`), exactly when the mock would have rolled its own season.
+    (`align_state`), exactly when the core would have rolled its own season.
 
-Why the mock's own roll can never fight the server: MockGameApi.rollSeason fires inside bootstrap/advance when
+Why the core's own roll can never fight the server: `rollSeason` fires inside every catch-up (bootstrap, advance, command) when
 `now - state.season.endsAt >= SEASON_ROLL_H h`. Before every sim call the API (game.GameService._lock) takes the
 server's newest season (rotating it inline when it is overdue, see `current`) and rewrites `state.season.{id,startsAt,
 endsAt}` to it. The state's season is then either open (`now < endsAt`) or closed for less than SEASON_ROLL_H hours
-(otherwise the server season would have rolled first, with the same threshold), so the mock's condition is never true.
-SEASON_ROLL_H is a constant on purpose: it must stay equal to the mock's.
+(otherwise the server season would have rolled first, with the same threshold), so the core's condition is never true.
+SEASON_ROLL_H is a constant on purpose: it must stay equal to the core's.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from .models import Factory, Season, SeasonResult
 log = logging.getLogger("mosprom.seasons")
 
 SEASON_DAYS = 7  # SEASON_DAYS of vendor/frontend content/balance.ts
-SEASON_ROLL_H = 1  # SEASON_ROLL_H of MockGameApi.ts: do not change without the mock
+SEASON_ROLL_H = 1  # SEASON_ROLL_H of lib/core/core.ts: do not change without the core
 SEASON_LOCK_KEY = 0x4D50_5301  # pg_advisory_xact_lock: serialises close / open / bot growth / first season
 DAY_MS = 86_400_000
 ROLL_MS = SEASON_ROLL_H * 3_600_000
@@ -140,9 +140,9 @@ async def ensure(session: AsyncSession, now_ms: int, *, bots_enabled: bool = Tru
 
 
 def align_state(state: dict[str, Any], season: Season) -> bool:
-    """Make `state.season` (the mock's season block) the server season. When the id differs the mock's own season reset
-    is applied (MockGameApi.rollSeason: stars = 0, shipped = {}, rejected = 0 in `state.sim`; layout, credits, xp,
-    level, collection stay; `shiftsLeft` / `shiftsDay` are NOT touched). A matching id only syncs the bounds.
+    """Make `state.season` ({id, startsAt, endsAt}, same place in schema v1 and v2) the server season. When the id differs the
+    core's own season reset is applied (core `rollSeason`: stars = 0, shipped = {}, rejected = 0 in `state.sim`; layout,
+    credits, xp, level, collection stay; the shift counter `state.shiftsLeft` / `shiftsDay` is NOT touched). A matching id only syncs the bounds.
     Mutates `state`; returns True when anything changed. A state without a season block is left alone."""
     cur = state.get("season")
     if not isinstance(cur, dict):
@@ -163,7 +163,7 @@ def align_state(state: dict[str, Any], season: Season) -> bool:
 
 def patch_snapshot(snapshot: dict[str, Any], season: Season, now_ms: int) -> None:
     """Align `snapshot.season` of a freshly created factory (the sim built it with its own season 1 = now .. now + 7 d)
-    without a second sim call: id / bounds from the server, `closed` and `dayIndex` as MockGameApi.snapshot computes them."""
+    without a second sim call: id / bounds from the server, `closed` and `dayIndex` as the core's snapshotOf computes them."""
     cur = snapshot.get("season")
     if not isinstance(cur, dict):
         return

@@ -3,22 +3,20 @@ import { readFileSync } from 'node:fs';
 import { before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import type { Command } from '$lib/api/types';
-import { command } from '../src/engine';
-import type { StateObject } from '../src/host';
+import { command, type StateObject } from '../src/engine';
 import { GENERIC_REASON, REJECTION_REASONS, rejectionCode, type RejectionReason } from '../src/reasons';
-import { T0, buildTutorialLine, newFactory, season, shiftCmd } from './helpers';
+import { T0, buildTutorialLine, newFactory, shifts, shiftCmd } from './helpers';
 
-// Every rejection message found in the vendored lib (MockGameApi.ts, sim/build.ts, loan.ts, economy.ts, history.ts,
-// content/stoplist.ts and the check* helpers of build.ts), grouped by the reason it must map to. Numbers are samples.
+// Every rejection message found in the vendored lib (core/core.ts, sim/build.ts, loan.ts, economy.ts, history.ts,
+// content/stoplist.ts and the check* helpers of build.ts), grouped by the reason the FALLBACK TABLE maps it to. Numbers are samples.
+// The core sets `code` itself for the daily shift limit and the engine decides the submitShift plausibility: those two
+// messages never reach the table (CORE_CODED, SHIFT_MSG below).
 const EXPECTED: Record<RejectionReason, string[]> = {
-	daily_limit_exceeded: ['Смены на сегодня кончились — завтра 5 новых'],
+	daily_limit_exceeded: [],
 	season_closed: ['Сезон закрыт'],
 	insufficient_funds: ['Не хватает 120 🪙', 'Нужно 300 🪙, чтобы вернуть снесённое', 'Нет 🪙, чтобы вернуть'],
 	not_found: ['Станция не найдена', 'Здание не найдено', 'Нет такого здания', 'Заказ недоступен', 'Нужна рампа отгрузки'],
-	// answered by command type in engine.ts (the mock has no message for them)
-	tick_removed: [],
-	history_unavailable: [],
-	// 'Смена не засчитана' depends on the cmd: covered separately below
+	// decided by the engine from the cmd (engine.ts shiftPlausibility): the message of the core is the same for both
 	minigame_too_short: [],
 	impossible_score: [],
 	rejected: [
@@ -35,8 +33,10 @@ const EXPECTED: Record<RejectionReason, string[]> = {
 };
 
 const SHIFT_MSG = 'Смена не засчитана';
+/** Messages of the core that carry their own `code` (core/core.ts `shift`). */
+const CORE_CODED = ['Смены на сегодня кончились — завтра 5 новых'];
 const norm = (m: string) => m.replace(/\$\{[^}]*\}/g, '#').replace(/\d+/g, '#');
-const known = new Set([...Object.values(EXPECTED).flat(), SHIFT_MSG].map(norm));
+const known = new Set([...Object.values(EXPECTED).flat(), SHIFT_MSG, ...CORE_CODED].map(norm));
 
 describe('rejectionCode: the Russian message -> reason table', () => {
 	it('every known message maps as intended', () => {
@@ -47,20 +47,11 @@ describe('rejectionCode: the Russian message -> reason table', () => {
 				n++;
 			}
 		}
-		assert.ok(n > 50);
+		assert.ok(n > 40);
 	});
 
-	it('submitShift "Смена не засчитана" is split by the cmd: too short vs impossible score', () => {
-		const shift = (durationMs: number, score: number) =>
-			({ type: 'submitShift', buildingId: 'b1', result: { gameId: 'g', profession: 'operator', result: 'win', score, durationMs, difficulty: 1, metrics: {} } }) as Command;
-		assert.equal(rejectionCode(SHIFT_MSG, shift(399, 0.5)), 'minigame_too_short');
-		assert.equal(rejectionCode(SHIFT_MSG, shift(0, 0.5)), 'minigame_too_short');
-		assert.equal(rejectionCode(SHIFT_MSG, shift(5000, 1.01)), 'impossible_score');
-		assert.equal(rejectionCode(SHIFT_MSG, shift(5000, -0.01)), 'impossible_score');
-		assert.equal(rejectionCode(SHIFT_MSG, shift(100, 7)), 'minigame_too_short', 'duration is checked first');
-		assert.equal(rejectionCode(SHIFT_MSG, shift(5000, 0.5)), GENERIC_REASON, 'nothing implausible in the cmd');
-		assert.equal(rejectionCode(SHIFT_MSG), GENERIC_REASON, 'no cmd');
-		assert.equal(rejectionCode(SHIFT_MSG, { type: 'ageConfirm' }), GENERIC_REASON, 'not a shift');
+	it('the shift messages are not in the table: the core codes the daily limit itself, the engine the plausibility', () => {
+		for (const m of [SHIFT_MSG, ...CORE_CODED]) assert.equal(rejectionCode(m), GENERIC_REASON, m);
 	});
 
 	it('unknown, empty, wrong-case and non-string messages fall back to "rejected"', () => {
@@ -77,7 +68,7 @@ describe('rejectionCode: the Russian message -> reason table', () => {
 
 	it('drift guard: every `error: "<literal>"` in the vendored lib is covered by this test', () => {
 		const lib = (p: string) => readFileSync(fileURLToPath(new URL('../../vendor/frontend/web/src/lib/' + p, import.meta.url)), 'utf8');
-		const files = ['api/mock/MockGameApi.ts', 'sim/build.ts', 'sim/loan.ts', 'sim/economy.ts', 'sim/history.ts'];
+		const files = ['core/core.ts', 'sim/build.ts', 'sim/loan.ts', 'sim/economy.ts', 'sim/history.ts'];
 		const missing = new Set<string>();
 		let seen = 0;
 		for (const f of files) {
@@ -86,12 +77,12 @@ describe('rejectionCode: the Russian message -> reason table', () => {
 				if (!known.has(norm(m[2]))) missing.add(`${f}: ${m[2]}`);
 			}
 		}
-		assert.ok(seen > 40, `scanned ${seen} literals`);
+		assert.ok(seen > 30, `scanned ${seen} literals`);
 		assert.deepEqual([...missing], [], 'new rejection message in vendor: add it to EXPECTED (and to REJECTION_RULES if it needs its own reason)');
 	});
 });
 
-describe('command(): rejections carry {ok:false, error:<ru>, code}', () => {
+describe('command(): rejections carry {ok:false, error:<ru>, code} (core r.code first, table fallback)', () => {
 	let base: StateObject;
 	let now: number;
 	before(async () => {
@@ -121,27 +112,34 @@ describe('command(): rejections carry {ok:false, error:<ru>, code}', () => {
 
 	it('season_closed: loan after the season end', async () => {
 		const closed = structuredClone(base) as { season: { endsAt: number } };
-		closed.season.endsAt = now;
+		closed.season.endsAt = now - 1000; // closed less than 1 h ago: the core does not roll the season yet
 		const r = await run({ type: 'takeLoan', amount: 100 }, closed as unknown as StateObject);
 		assert.deepEqual(r.result, { ok: false, error: 'Сезон закрыт', code: 'season_closed' });
 	});
 
 	it('submitShift: minigame_too_short, impossible_score, wrong profession', async () => {
 		const short = await run(shiftCmd(base, { durationMs: 399 }));
-		assert.deepEqual(short.result, { ok: false, error: SHIFT_MSG, code: 'minigame_too_short' });
+		assert.equal(short.result.ok, false);
+		assert.equal(short.result.code, 'minigame_too_short');
 		assert.equal((await run(shiftCmd(base, { durationMs: 400 }))).result.ok, true, '400 ms is the boundary');
 		assert.equal((await run(shiftCmd(base, { score: 1.2 }))).result.code, 'impossible_score');
 		assert.equal((await run(shiftCmd(base, { score: -0.5 }))).result.code, 'impossible_score');
 		assert.equal((await run(shiftCmd(base, { score: 1 }))).result.ok, true, 'score 1 is allowed');
 		assert.equal((await run(shiftCmd(base, { profession: 'lab' }))).result.code, 'rejected');
 		// a rejected shift does not burn the daily counter
-		assert.equal(season(short.state).shiftsLeft, 5);
+		assert.equal(shifts(short.state).shiftsLeft, 5);
 	});
 
-	it('tick / undo / redo carry their own codes', async () => {
-		assert.deepEqual((await run({ type: 'tick', from: 0, to: 1, events: [] })).result, { ok: false, error: 'tick_removed', code: 'tick_removed' });
-		for (const type of ['undo', 'redo'] as const) {
-			assert.deepEqual((await run({ type })).result, { ok: false, error: 'history_unavailable', code: 'history_unavailable' });
+	it('daily_limit_exceeded comes from r.code of the core', async () => {
+		const spent = structuredClone(base) as { shiftsLeft: number };
+		spent.shiftsLeft = 0;
+		const r = await run(shiftCmd(base), spent as unknown as StateObject);
+		assert.deepEqual(r.result, { ok: false, error: 'Смены на сегодня кончились — завтра 5 новых', code: 'daily_limit_exceeded' });
+	});
+
+	it('undo / redo with an empty history are plain rejections (the history lives in the state)', async () => {
+		for (const [type, msg] of [['undo', 'Нечего отменять'], ['redo', 'Нечего повторять']] as const) {
+			assert.deepEqual((await run({ type }, await newFactory())).result, { ok: false, error: msg, code: 'rejected' });
 		}
 	});
 

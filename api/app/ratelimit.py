@@ -33,7 +33,7 @@ LIMITS: dict[str, Limit] = {
     "bootstrap": Limit(10),
     "factory_me": Limit(60),
     "command": Limit(120, burst=20),
-    "advance": Limit(10),
+    "advance": Limit(10, burst=2),  # the web client keeps <= 8/min (heartbeat 30 s + order_due); never below 10/min
     "leaderboard": Limit(60),
     "events": Limit(10),
     "leads": Limit(5),

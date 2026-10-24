@@ -75,8 +75,8 @@ def test_compute_tags_unit():
     far = (on + timedelta(days=200)).isoformat()
     assert "ready_for_season" in compute_tags(body(course="1", direction="x", readiness=None, readyFrom=soon), 0, on)
     assert "ready_for_season" not in compute_tags(body(course="1", direction="x", readiness=None, readyFrom=far), 0, on)
-    assert compute_tags(body(course="1", direction="x", readiness="later"), 8, on) == ["high_quiz"]
-    assert compute_tags(body(course="1", direction="x", readiness="later"), 7, on) == []
+    assert compute_tags(body(course="1", direction="x", readiness="later"), 6, on) == ["high_quiz"]
+    assert compute_tags(body(course="1", direction="x", readiness="later"), 5, on) == []
     assert compute_tags(body(), 10, on) == ["senior", "profile_direction", "ready_for_season", "high_quiz"]
 
 
@@ -144,9 +144,9 @@ async def test_enrichment_from_factory_and_quiz(engage):
     await seed_factory(engage, 1, stars=40, snapshot=snap)
     await seed_factory(engage, 2, stars=90)
     uid = await user_id(engage, 1)
-    for a in correct_answers(8):
+    for a in correct_answers(8, index=True):
         await engage.db.execute("INSERT INTO quiz_answers (user_id, question_id, correct, answer) VALUES ($1, $2, true, $3)",
-                                uid, a["questionId"], a["answer"])
+                                uid, a["question_id"], a["answer"])
     lead = (await post_lead(engage)).json()
     assert lead["bestProfession"] == "lab" and lead["seasonPlace"] == 2 and lead["quizScore"] == 8
     assert "high_quiz" in lead["tags"]
@@ -402,7 +402,7 @@ async def test_summary_shows_quiz_result_and_lead_status(game):
     r = await game.post("/api/quiz/answer", json=correct_answers(4) + [], headers=dev(1))
     assert r.status_code == 200
     s = (await game.get("/api/season/summary", headers=dev(1))).json()
-    assert s["quizResult"] == {"score": 4, "answered": 4, "total": 10, "completed": False}
+    assert s["quizResult"] == {"correct": 4, "total": 4, "score": 100, "answered": 4, "completed": False, "bankTotal": 8}
     r = await post_lead(game)
     assert r.status_code == 201 and r.json()["quizScore"] == 4
     assert (await game.get("/api/season/summary", headers=dev(1))).json()["leadStatus"] == "new"

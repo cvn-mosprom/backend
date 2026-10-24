@@ -3,9 +3,8 @@
     SIM_URL=http://127.0.0.1:58080 .venv/Scripts/python -m pytest tests/test_game_sim.py
 
 Skipped unless SIM_URL is set (the autouse env cleaner in conftest removes it per test, so it is captured at import).
-Needs the throwaway Postgres / Redis like every other DB test. Sim rejection codes (`result.code`) are asserted
-strictly only when the sim under test emits them (detected through `undo`), so the module also runs against an
-older sim build.
+Needs the throwaway Postgres / Redis like every other DB test. The sim under test is the S12 one (vendored
+`lib/core`): state schema v2, undo/redo served from `state.history`, rejection codes from the core.
 """
 from __future__ import annotations
 
@@ -49,7 +48,7 @@ async def test_bootstrap_reload_keeps_the_factory(real):
     assert first["version"] == 0 and first["snapshot"]["factory"]["layout"]["buildings"] == []
     row = await factory_row(real)
     assert row["credits"] == credits_of(first) and row["snapshot"] == first["snapshot"]
-    assert row["state"]["v"] == 1 and row["state"]["player"]["id"]
+    assert row["state"]["v"] == 2 and row["state"]["player"]["id"]
 
     assert (await command(real, 0, key(1), BREW_TANK)).status_code == 200
     reloaded = await bootstrap(real)  # "reload loses nothing"
@@ -73,7 +72,7 @@ async def test_effect_command_replay_and_conflict(real):
     assert (await factory_row(real))["state"]["meta"]["idempotency"][0]["key"] == key(1)  # sim kept meta intact
 
     conflict = await command(real, 0, key(2), {"type": "dialogDone", "id": "intro"})
-    assert assert_error(conflict, 409, "version_conflict")["details"] == {"current_version": 1}
+    assert assert_error(conflict, 409, "version_conflict")["details"]["current_version"] == 1
     # resync -> retry works
     synced = (await me(real)).json()
     assert synced["version"] == 1 and synced["degraded"] is False
@@ -95,18 +94,70 @@ async def test_rejected_by_game_rules_is_422_and_recorded(real):
     assert again["details"]["replayed"] is True
 
 
-async def test_tick_undo_redo_rejections(real):
+async def test_tick_is_a_validation_error_and_undo_on_an_empty_history_is_a_rule_rejection(real):
     await bootstrap(real)
-    undo = assert_error(await command(real, 0, key(1), {"type": "undo"}), 422, "command_rejected")
     tick = assert_error(await command(real, 0, key(2), {"type": "tick", "events": [], "from": 1, "to": 2}),
-                        422, "command_rejected")
-    redo = assert_error(await command(real, 0, key(3), {"type": "redo"}), 422, "command_rejected")
-    for e in (undo, tick, redo):
-        assert e["details"]["version"] == 0
-    if undo["details"]["reason"] != "rejected":  # a sim build with rejection codes
-        assert undo["details"]["reason"] == redo["details"]["reason"] == "history_unavailable"
-        assert tick["details"]["reason"] == "tick_removed"
+                        422, "validation_error")
+    assert tick["details"]["errors"]
+    for i, t in enumerate(("undo", "redo")):
+        err = assert_error(await command(real, 0, key(3 + i), {"type": t}), 422, "command_rejected")
+        assert err["details"]["version"] == 0 and err["details"]["reason"] == "rejected"
+        assert err["details"]["message"] in ("Нечего отменять", "Нечего повторять")
     assert (await factory_row(real))["version"] == 0
+
+
+async def test_undo_redo_work_over_http_and_survive_a_re_request(real):
+    """The history is part of factories.state: undo/redo go through the ordinary command path (version + 1, idempotent),
+    and a fresh bootstrap / factory/me in between loses nothing."""
+    boot = await bootstrap(real)
+    assert boot["features"]["undo"] is True  # /health historyInState
+    assert (await command(real, 0, key(1), BREW_TANK)).status_code == 200
+    again = await bootstrap(real)
+    assert again["snapshot"]["undoSteps"] == 1 and again["snapshot"]["undoLabel"]
+    assert len((await factory_row(real))["state"]["history"]["undo"]) == 1
+
+    undo = await command(real, 1, key(2), {"type": "undo"})
+    assert undo.status_code == 200, undo.text
+    body = undo.json()
+    assert body["version"] == 2 and body["snapshot"]["factory"]["layout"]["buildings"] == []
+    assert (body["snapshot"]["undoSteps"], body["snapshot"]["redoSteps"]) == (0, 1)
+    assert (await me(real)).json()["snapshot"]["redoSteps"] == 1  # a re-request keeps the history
+    replay = (await command(real, 1, key(2), {"type": "undo"})).json()  # same key: not undone twice
+    assert replay["replayed"] is True and replay["version"] == 2
+
+    redo = await command(real, 2, key(3), {"type": "redo"})
+    assert redo.status_code == 200, redo.text
+    assert [b["kind"] for b in redo.json()["snapshot"]["factory"]["layout"]["buildings"]] == ["brew_tank"]
+    assert (await factory_row(real))["version"] == 3
+
+
+TUTORIAL_LINE = json.loads(Path(__file__).with_name("tutorial_line.json").read_text("utf-8"))  # content/tutorial.ts quest line
+
+
+async def test_eta_at_appears_on_loading_orders_and_follows_a_rebuild(real):
+    """Server schedule (Order.etaAt): present on a loading order, gone while the line is cut, back with undo."""
+    await bootstrap(real)
+    version = 0
+    for i, cmd in enumerate(TUTORIAL_LINE):
+        resp = await command(real, version, key(100 + i), cmd)
+        assert resp.status_code == 200, (cmd, resp.text)
+        version = resp.json()["version"]
+    snap = (await me(real)).json()["snapshot"]
+    order = next(o for o in snap["orders"] if o["status"] == "available")
+    dock = next(b for b in snap["factory"]["layout"]["buildings"] if b["kind"] == "dock")
+    accepted = await command(real, version, key(200), {"type": "acceptOrder", "orderId": order["id"], "dockId": dock["id"]})
+    assert accepted.status_code == 200, accepted.text
+    version = accepted.json()["version"]
+    loading = next(o for o in accepted.json()["snapshot"]["orders"] if o["status"] == "loading")
+    assert isinstance(loading["etaAt"], (int, float)) and loading["etaAt"] >= accepted.json()["snapshot"]["serverTime"]
+    belt = next(c for c in accepted.json()["snapshot"]["factory"]["layout"]["conveyors"] if c["kind"] == "belt")
+    cut = await command(real, version, key(201), {"type": "remove", "cells": [{"x": belt["x"], "y": belt["y"]}], "kind": "belt"})
+    assert cut.status_code == 200, cut.text
+    assert next(o for o in cut.json()["snapshot"]["orders"] if o["id"] == loading["id"]).get("etaAt") is None
+    back = await command(real, cut.json()["version"], key(202), {"type": "undo"})
+    assert back.status_code == 200, back.text
+    restored = next(o for o in back.json()["snapshot"]["orders"] if o["id"] == loading["id"])
+    assert abs(restored["etaAt"] - loading["etaAt"]) < 5 * 60_000
 
 
 async def test_sixth_shift_of_the_day_is_rejected_by_the_server(real):
@@ -117,11 +168,10 @@ async def test_sixth_shift_of_the_day_is_rejected_by_the_server(real):
         assert r.status_code == 200, r.text
         assert r.json()["snapshot"]["season"]["shiftsLeft"] == 4 - i
     sixth = await command(real, 6, key(5), KVASOVAR_SHIFT)
-    has_codes = (await command(real, 6, key(98), {"type": "undo"})).json()["error"]["details"]["reason"] != "rejected"
-    err = assert_error(sixth, 422, "daily_limit_exceeded" if has_codes else "command_rejected")
+    err = assert_error(sixth, 422, "daily_limit_exceeded")
     assert err["details"]["version"] == 6 and err["details"]["snapshot"]["season"]["shiftsLeft"] == 0
     row = await factory_row(real)
-    assert row["version"] == 6 and row["state"]["season"]["shiftsLeft"] == 0  # the counter lives in the state
+    assert row["version"] == 6 and row["state"]["shiftsLeft"] == 0  # the counter lives in the state
     replay = await command(real, 6, key(5), KVASOVAR_SHIFT)  # a retry of the rejected shift is the same answer
     assert replay.status_code == 422 and replay.json()["error"]["details"]["replayed"] is True
 
@@ -165,7 +215,7 @@ async def test_sim_down_degrades_factory_me_and_503s_the_rest(make_client, clean
     await dead.aclose()
 
 
-# ================================================================ state size audit (spec: state <= 150 KB, after S1U)
+# ================================================================ state size audit (spec: state <= 150 KB)
 
 BIG_LAYOUT = Path(__file__).with_name("big_demo_layout.json")  # vendor lib/sim/templates.ts bigDemoLayout(): 48 buildings
 STATE_LIMIT_BYTES = 150 * 1024
@@ -198,9 +248,6 @@ def session_script(layout: dict) -> list[dict]:
     return cmds
 
 
-@pytest.mark.xfail(reason="the 150 KB target is only guaranteed after S1U (undo history as diffs inside the state); "
-                          "today the history lives outside the state, so this usually passes - report the numbers either way",
-                   strict=False)
 async def test_state_stays_under_150_kb_after_a_long_session_on_the_big_layout(real, monkeypatch):
     clock = Clock(int(time.time() * 1000))
     monkeypatch.setattr("app.game.now_ms", clock)
@@ -236,9 +283,9 @@ async def test_state_stays_under_150_kb_after_a_long_session_on_the_big_layout(r
                                       f"{rejected} rejected commands")
 
 
-async def test_server_season_alignment_against_the_real_mock(real):
-    """The real MockGameApi would roll a long-closed season to id + 1 by itself; the API pins the state to the server's
-    season first, so the sim lands on the server season (id 3) with the mock's reset semantics and the layout kept."""
+async def test_server_season_alignment_against_the_real_core(real):
+    """The core would roll a long-closed season to id + 1 by itself; the API pins the state to the server's season
+    first, so the sim lands on the server season (id 3) with the core's reset semantics and the layout kept."""
     await real.db.execute("INSERT INTO seasons (starts_at, ends_at, days, closed) VALUES "
                           "(now() - interval '30 days', now() - interval '20 days', 7, true),"
                           "(now() - interval '19 days', now() - interval '10 days', 7, true),"
@@ -273,3 +320,27 @@ async def test_age_confirm_reaches_the_user_row_with_the_real_sim(real):
     assert res.json()["snapshot"]["player"]["ageConfirmed"] is True
     row = await real.db.fetchrow("SELECT age_confirmed, age_confirmed_at FROM users WHERE tg_id = 7")
     assert row["age_confirmed"] is True and row["age_confirmed_at"] is not None
+
+
+# ================================================================ old (v1) factories load without loss
+
+async def test_a_v1_state_written_by_the_old_sim_is_migrated_in_place_on_the_first_request(real):
+    """factories.state of the pre-core sim (schema v1: shifts inside `season`, mock clock, no history) goes through
+    migrateState on the first load; layout, money, meta and the unseen report are kept, the shift counter moves."""
+    boot = await bootstrap(real)
+    state = (await factory_row(real))["state"]
+    legacy = {k: v for k, v in state.items() if k not in ("shiftsLeft", "shiftsDay", "history")}
+    legacy["v"] = 1
+    legacy["season"] = {**state["season"], "shiftsLeft": 3, "shiftsDay": state["shiftsDay"]}
+    legacy["clock"] = {"real": 1, "server": 1, "scale": 1}
+    legacy["lastSeenReal"] = 1
+    legacy["prodAt"] = state["lastTick"]
+    legacy["sim"]["layout"]["buildings"] = [{"id": "b1", "kind": "brew_tank", "x": 6, "y": 3, "rot": 0, "level": 1, "wear": 0}]
+    await real.db.execute("UPDATE factories SET state = $1::jsonb", json.dumps(legacy))
+    got = (await me(real)).json()
+    assert got["snapshot"]["season"]["shiftsLeft"] == 3
+    assert [b["id"] for b in got["snapshot"]["factory"]["layout"]["buildings"]] == ["b1"]
+    row = (await factory_row(real))["state"]
+    assert row["v"] == 2 and row["shiftsLeft"] == 3 and "shiftsLeft" not in row["season"]
+    assert row["history"] == {"undo": [], "redo": []} and "clock" not in row and "prodAt" not in row
+    assert boot["version"] == (await factory_row(real))["version"] == 0  # a migration is not a command: no version bump

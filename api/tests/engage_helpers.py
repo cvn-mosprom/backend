@@ -69,11 +69,23 @@ def years_ago(years: int, days: int = 0) -> str:
 
 
 def lead_body(**over: Any) -> dict[str, Any]:
+    """The case form with the pre-S9 field names (telegram, direction, vacancy, consentTextVersion)."""
     body: dict[str, Any] = {
         "fullName": "Иванов Иван Иванович", "birthDate": years_ago(21), "phone": "+7 916 123-45-67",
         "email": "ivan@example.com", "telegram": "@ivan_petrov", "university": "РХТУ им. Менделеева",
         "direction": "Химическая технология", "course": "4", "vacancy": "lab", "readiness": "season",
         "practiceType": "paid", "consent": True, "consentTextVersion": "2026-10-v1"}
+    body.update(over)
+    return {k: v for k, v in body.items() if v is not None}
+
+
+def client_body(**over: Any) -> dict[str, Any]:
+    """The client's LeadForm exactly as vendor/frontend buildLead() sends it (http-contract.md, POST /api/leads)."""
+    body: dict[str, Any] = {
+        "fullName": "Иван Иванов", "birthDate": years_ago(21), "phone": "+79990000000", "email": "a@b.ru",
+        "tgUsername": "ivan_ivanov", "university": "МГУ", "institutionKind": "vuz", "course": "3", "department": "lab",
+        "roleId": "operator", "readyFrom": "2027-03-01", "practiceType": "paid", "consent": True,
+        "consentVersion": "2026-10-24"}
     body.update(over)
     return {k: v for k, v in body.items() if v is not None}
 
@@ -120,9 +132,14 @@ async def seed_factory(c, tg: int = 1, *, stars: int = 0, snapshot: dict[str, An
     return sid
 
 
-def correct_answers(n: int | None = None) -> list[dict[str, Any]]:
-    return [{"questionId": q.id, "answer": q.correct} for q in quiz_bank.QUESTIONS[:n]]
+def correct_answers(n: int | None = None, *, index: bool = False) -> list[dict[str, Any]]:
+    """Right answers for the first n questions: the option id ('b', what the client sends) or the 0-based index."""
+    return [{"question_id": q.id, "answer": q.correct if index else q.correct_id} for q in quiz_bank.QUESTIONS[:n]]
 
 
-def wrong_answers(n: int | None = None) -> list[dict[str, Any]]:
-    return [{"questionId": q.id, "answer": (q.correct + 1) % len(q.options)} for q in quiz_bank.QUESTIONS[:n]]
+def wrong_answers(n: int | None = None, *, index: bool = False) -> list[dict[str, Any]]:
+    out = []
+    for q in quiz_bank.QUESTIONS[:n]:
+        w = (q.correct + 1) % len(q.options)
+        out.append({"question_id": q.id, "answer": w if index else q.option_ids[w]})
+    return out

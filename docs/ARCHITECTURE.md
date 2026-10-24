@@ -36,29 +36,36 @@ Every response carries `X-Request-ID` (echo incoming header or generate uuid4).
   (secret = HMAC_SHA256(key="WebAppData", msg=BOT_TOKEN)); `auth_date` older than `INIT_DATA_MAX_AGE_S` (default 86400) -> 401 auth_expired;
   bad hash/format -> 401 invalid_init_data; missing header -> 401 unauthorized. Short Redis cache of verified initData (key = sha256 of raw string, TTL 300 s).
 - Dev: when `DEV_AUTH=1`, header `Authorization: dev <tg_id>[:<name>]` is accepted. Never enabled in prod (`APP_ENV=prod` forces it off).
+- Web client (S8): `X-Telegram-Init-Data: <raw initData>` (same as `tma`) and `X-Dev-User: <tg_id>` (same as `dev`, name `Dev<id>`, dev only).
+  Priority: `Authorization`, then `X-Telegram-Init-Data`, then `X-Dev-User`; the first header present wins. An empty `X-Telegram-Init-Data` -> 401 unauthorized.
+- CORS (S8, `CORSMiddleware`, outermost so that 4xx/429/5xx carry the headers; a preflight never reaches auth / rate limit / timeout):
+  origins from `CORS_ORIGINS` (comma-separated); empty -> dev `http://localhost:5173`, prod the origin of `WEBAPP_URL` (else `https://$DOMAIN`).
+  Allowed headers `X-Telegram-Init-Data, X-Dev-User, Content-Type, Authorization`, methods `GET, POST, DELETE`, exposed `Retry-After, X-Request-ID`, max-age 600.
 
 ## Env vars
 
 `APP_ENV` (dev|prod), `DATABASE_URL` (postgresql+asyncpg://...), `REDIS_URL`, `SIM_URL` (http://sim:8080), `SIM_TIMEOUT_S` (3),
 `BOT_TOKEN`, `DEV_AUTH` (0|1), `INIT_DATA_MAX_AGE_S`, `PGBOUNCER` (0|1 -> statement_cache_size=0 + prepared_statement_cache_size=0),
-`DOMAIN` (caddy), `LOG_LEVEL`.
+`DOMAIN` (caddy), `LOG_LEVEL`, `CORS_ORIGINS`, `WEBAPP_URL`.
 
 ## Sim service HTTP API (internal, JSON, port 8080)
 
-The factory state is an opaque JSON object (`factories.state` JSONB). Today it is exactly the mock's `MockState` serialised,
-plus top-level fields the sim does not know (e.g. `meta.idempotency`, owned by the API). **The sim MUST round-trip unknown
-top-level fields untouched** (covered by a contract test). Times are ms since epoch, server time.
+The factory state is a JSON object (`factories.state` JSONB): the `FactoryState` of the vendored game core
+(`vendor/frontend/web/src/lib/core`, schema `v: 2`, see "S12 decisions" below), plus top-level fields the sim does not know
+(e.g. `meta.idempotency`, `meta.speed`, owned by the API). **The sim MUST round-trip unknown top-level fields untouched**
+(covered by tests). Every state the sim receives goes through `migrateState` first (an old v1 state is upgraded lazily).
+Times are ms since epoch, server time.
 
 | Method/path | Body | Response |
 |---|---|---|
-| `GET /health` | – | `{"status":"ok","service":"sim","simCommit":"<vendor/frontend sha>"}` |
-| `POST /v1/bootstrap` | `{state: object\|null, now, player: {id, tgId?, name, username?}}` | `{state, snapshot}` — creates a fresh state when null; lazy offline catch-up (cap 8 h) like `MockGameApi.bootstrap` |
+| `GET /health` | – | `{"status":"ok","service":"sim","simCommit":"<vendor/frontend sha>","historyInState":true,"stateV":2}` |
+| `POST /v1/bootstrap` | `{state: object\|null, now, player: {id, tgId?, name, username?}}` | `{state, snapshot}` — creates a fresh state when null; lazy offline catch-up (cap 8 h): `freshState` / `advanceState(.., {offlineReport})` of the core |
 | `POST /v1/command` | `{state, now, cmd}` | `{state, result: {ok, error?, toast?, rewards?}, snapshot}` — `result.ok=false` means rejected by game rules (API maps to 422 command_rejected) |
 | `POST /v1/advance` | `{state, now, capHours?, reason?}` | `{state, snapshot, advancedMs}` |
 | `POST /v1/snapshot` | `{state, now}` | `{snapshot}` — pure read, no state change |
 
 Sim errors: 400 `{"error":{"code":"bad_request",...}}` for malformed input, 500 for crashes. The API treats timeout (3 s) or connection error as 503 sim_unavailable.
-Snapshot shape = `GameSnapshot` from `vendor/frontend/web/src/lib/api/types.ts`.
+Snapshot shape = `GameSnapshot` from `vendor/frontend/web/src/lib/api/types.ts` (`snapshotOf`; no `rank`: the API sets the real one).
 
 ## Generated contract
 
@@ -79,8 +86,8 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
   version, so passive sync in one tab never causes 409 in another tab. `version_conflict` comes only from POST /api/command.
 - **Time:** API sends the sim `now = max(server_now_ms, state.lastTick)` (monotonic per factory).
 - **Sim rejection codes:** sim `/v1/command` returns `result = {ok:false, error:<ru message>, code:<reason>}`. Reasons:
-  `daily_limit_exceeded`, `minigame_too_short`, `impossible_score`, `history_unavailable`, `tick_removed`, `season_closed`,
-  `insufficient_funds`, `not_found`, `rejected` (generic fallback). API mapping: reasons `daily_limit_exceeded`,
+  `daily_limit_exceeded`, `minigame_too_short`, `impossible_score`, `season_closed`,
+  `insufficient_funds`, `not_found`, `rejected` (generic fallback; `history_unavailable` / `tick_removed` are gone since S12/S11). API mapping: reasons `daily_limit_exceeded`,
   `minigame_too_short`, `impossible_score` become the top-level error code (422); everything else is 422 `command_rejected`
   with `details.reason`. Details always include `message`, `version` and the fresh `snapshot`.
 - **POST /api/command** body `{version:int, idempotency_key:str(8..64), cmd:Command}`; success 200
@@ -90,29 +97,33 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
   same transaction as the state; Redis `idem:{user_id}:{key}` TTL 600 s is only a fast-path cache.
   Rejected commands are also recorded (a replay returns the same rejection).
 - **buildEnd:** auth + rate limit, read version without lock, 200 `{ok:true, version, result:{}, events:[], snapshot:null, replayed:false}`; no write, no idempotency.
-- **tick / undo / redo:** rejected by sim (`tick_removed`, `history_unavailable`) -> 422 command_rejected.
+- **tick / undo / redo:** since S11 `tick` is not in the `Command` union: the API answers 422 `validation_error` and never calls the sim.
+  Since S12 undo/redo are served by the sim from `state.history` (ordinary effect commands, version + 1, idempotent); with nothing to
+  undo/redo the core says "Нечего отменять/повторять" -> 422 `command_rejected`, `details.reason = "rejected"`.
 - **GET /api/bootstrap:** creates factory on first call (INSERT .. ON CONFLICT DO NOTHING, then SELECT .. FOR UPDATE), ensures an
   open season row exists (creates season 1 if none; rotation is S4), catch-up with 8 h cap, returns
-  `{version, serverTime, season:{id, startsAt, endsAt}, features:{undo:false, serverOrderEta:false}, snapshot}`.
+  `{version, serverTime, season:{id, startsAt, endsAt}, features:{undo, serverOrderEta, ..}, snapshot}`; since S12 `undo` = sim
+  `/health.historyInState` = true and `serverOrderEta` = true (`Order.etaAt` is set by the core on every loading order whose line can finish it).
 - **GET /api/factory/me:** catch-up under lock, `{version, serverTime, snapshot, degraded:false}`; sim down -> last stored snapshot
   (`factories.snapshot` JSONB column) with `degraded:true` (200).
 - **POST /api/advance** body `{cap_hours: 0..8 (default 8), reason: "resume"|"manual"|"background"}` -> `{version, serverTime, advancedMs, snapshot}`.
-- **Shift limit:** the counter lives in the factory state (`state.season.shiftsLeft/shiftsDay` of the persisted MockState — part of
-  factories.state, decremented inside the same sim command and the same DB transaction). No Redis counter. Server season
+- **Shift limit:** the counter lives in the factory state (top-level `state.shiftsLeft` / `shiftsDay` (MSK day) since schema v2, before S12
+  `state.season.shiftsLeft/shiftsDay` — part of factories.state, decremented inside the same sim command and the same DB transaction). No Redis counter. Server season
   bounds (seasons table) are aligned in S4.
 - Denormalised columns (credits, stars, level, xp, bottles_season, quality_avg, last_tick_at, updated_at) and `snapshot` are
   refreshed from the sim snapshot on every write.
-- **Sim (implemented in S2):** rejections carry `result.code` (table: `sim/src/reasons.ts`); `/v1/advance` accepts `reason`, and
-  `background` accumulates into an unseen offline report instead of replacing it; the sim itself enforces
-  `effectiveNow = max(now, state.lastTick)` on every endpoint.
+- **Sim (S2, kept in S12):** rejections carry `result.code` (core `r.code` first, fallback table `sim/src/reasons.ts`); `/v1/advance` accepts
+  `reason`, and `background` accumulates into an unseen offline report instead of replacing it (the core replaces, so the wrapper in
+  `sim/src/engine.ts` merges); the sim itself enforces `effectiveNow = max(now, state.lastTick)` on every endpoint.
 
 ## S3 decisions
 
 - submitShift is validated in the API (`api/app/shift.py`) before the sim call; the sim keeps its own checks as a second line.
   Top-level code `minigame_too_short` or `impossible_score`; `details.reason` is the rule name (e.g. `score_out_of_range`,
   `duration_too_long`, `win_score_too_low`). Accepted shifts are logged in table `shifts` in the same transaction.
-- `features.undo` = sim `/health.historyInState` (false until S1U removes undo/redo from `REJECTED_COMMANDS`), cached 60 s.
-- States over 150 KB are logged with `state_bytes`; the 150 KB audit test is xfail(strict=False) until S1U.
+- `features.undo` = sim `/health.historyInState` (true since S12), cached 60 s.
+- States over 150 KB are logged with `state_bytes`; the 150 KB audit test (`api/tests/test_game_sim.py`, opt-in `SIM_URL`) is a plain test
+  since S12 (158 commands on the 48-building demo layout: ~31 KB).
 
 ## S4 decisions (part A: leaderboard, visit, summary, bots)
 
@@ -120,7 +131,8 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
   from the sim snapshot on every write. `quality_avg` is 0 until something is produced (the sim reports 1 for an empty factory).
   `speed_bph` is derived (the snapshot has no flow rate): `snapshot.factory.bottlesPerHour` if a sim ever provides it, else
   d(produced)/d(time) between a baseline kept in `state.meta.speed` {t,p} and now (baseline moves after >= 60 s, window capped at 8 h);
-  idle/new factories show 0. Follow-up (sim): expose `bottlesPerHour` in `snapshot.factory`. `users.university` follows `setUniversity`.
+  idle/new factories show 0. S12: `snapshotOf` of lib/core does not expose `bottlesPerHour` either (it stays inside the core's own speed
+  board), so the delta stays; if the frontend ever adds it to `Factory`, the first branch picks it up with no API change. `users.university` follows `setUniversity`.
 - **GET /api/season/leaderboard** `?tab=general|quality|speed|uni&limit=1..100(100)&university|university_id=<name>&season_id`: season default = newest open one.
   Body = `Leaderboard` of types.ts (+ `seasonId`): value = stars / quality% (0.1) / bottles per hour; `uni` ranks by stars and adds `universities`
   (sum of stars per university, top 50). Top-100 cached in Redis `lb:{season}:{tab}:{uni}:{bots}` for `LEADERBOARD_CACHE_TTL_S` (20, fail-open, user agnostic);
@@ -178,19 +190,19 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
 
 - **Rotation** (`api/app/seasons.py`): a season closes when `now >= ends_at` (`closed`, `closed_at`; final standings frozen into
   `season_results` (season_id, user_id, place, stars, quality, speed_bph, bottles, is_bot; migration 0005): stars desc, user id asc, bots only while
-  BOTS_ENABLED). The next season opens when `now >= previous ends_at + 1 h` (SEASON_ROLL_H, = the mock's constant), starts at the moment it is
+  BOTS_ENABLED). The next season opens when `now >= previous ends_at + 1 h` (SEASON_ROLL_H, = the core's constant), starts at the moment it is
   opened and lasts SEASON_DAYS = 7. The 1 h counts from `ends_at`, not from when the job noticed (so a late job opens the next season at once).
   `rotate()` is idempotent and race-safe: cheap pre-check without a lock, then `pg_advisory_xact_lock` + re-read. It never locks factory rows, so
   it may run inside a factory write transaction (no lock cycles). Factories are NOT bulk-updated: a factory moves to the new season lazily, the
   next time it is loaded under its row lock (`factories.season_id` and the denormalised columns follow from that write). Until then it still
   shows in the old (closed) season; the frozen standings are in `season_results`. Known limits: the leaderboard of a CLOSED season is still
   computed live from `factories` (members leave it as they move on) and production of a stale factory between its last visit and `ends_at` is
-  credited to the new season when it comes back (the mock's catch-up has one `seasonOpen` flag per interval).
+  credited to the new season when it comes back (the state already carries the new season when the core's catch-up runs).
 - **State alignment** (`seasons.align_state`, called by `GameService._lock` on every locked load: bootstrap, command, advance, factory/me,
-  background): `state.season.{id,startsAt,endsAt}` := the server's newest season BEFORE the sim call; when the id differs the mock's reset runs
+  background): `state.season.{id,startsAt,endsAt}` := the server's newest season BEFORE the sim call; when the id differs the core's season reset runs
   (`state.sim.stars = 0`, `shipped = {}`, `rejected = 0`; factory, credits, level, xp, collection stay; `shiftsLeft` / `shiftsDay` untouched). A fresh
   factory is aligned after the sim created it and `snapshot.season` is patched in place (id / bounds / closed / dayIndex), no second sim call.
-  **Why the mock's own `rollSeason` never fires:** it runs in bootstrap/advance when `now - state.season.endsAt >= 1 h`. The state's season is always the
+  **Why the core's own `rollSeason` never fires:** it runs in every catch-up (bootstrap, advance, command) when `now - state.season.endsAt >= 1 h`. The state's season is always the
   server's newest one, and the API rotates inline (`seasons.current`) whenever `now >= newest.ends_at + 1 h`, so the state's season is open or closed
   for less than 1 h at every sim call. The sim's `seasonOpen = now < season.endsAt` therefore agrees with the server; during the 1 h gap the
   snapshot says `season.closed = true` with the old id and bootstrap returns that closed season.
@@ -257,3 +269,69 @@ Alembic `0006` (down_revision `0005`: the revision ids are the short strings `00
   else deadline), quiet hours 23–09 MSK, dedupe table `reminders_sent`; 5xx alert from Redis per-minute counters
   (`metrics:req:*`, `metrics:5xx:*`), ≥20 requests and >20 % 5xx over 10 min, 15 min cooldown.
 - `users.age_confirmed` follows `snapshot.player.ageConfirmed` in the same transaction as the command.
+
+## S9 decisions (lead form and quiz in the client's shape)
+
+The client (`vendor/frontend`, `docs/http-contract.md` rev 4, `web/src/lib/core/http/fakeApi.ts`) is the source of truth; the old names stay accepted.
+Alembic `0008` (down_revision `0007`): `leads.institution_kind` (`vuz|college`, check constraint, NULL for older leads).
+
+- **POST /api/leads** accepts the client's `LeadForm` as is: `tgUsername` (= `telegram`; the older name wins when both are sent), `consentVersion`
+  (= `consentTextVersion`), `department` id, `institutionKind`, `roleId` (= `vacancy`), `birthDate/phone/email/readyFrom/practiceType`; snake_case too.
+  Telegram usernames are 4..32 chars (the contract's own example is `ivan`; Telegram says 5, Fragment sells 4).
+- **department** `lab|bottling|tech|warehouse|engineering|other` is stored as the human label in `leads.direction` (Лаборатория, Розлив, Техника и
+  наладка, Склад и логистика, Инженерия, Другое) and gives `profile_direction` by id (`leads.DEPARTMENTS` -> `PROFILE_DIRECTIONS` key; `other` gives no
+  tag). It wins over the free-text `direction`, which still works alone (keyword match). Unknown id -> 422 `validation_error`. Same for `institutionKind`.
+- **senior** tag: course >= 4, a graduate, or `institutionKind == college` (any course). **high_quiz**: `HIGH_SCORE` 0.75 of the bank = 6 of 8 correct.
+- **GET /api/leads/me** (and the POST body) = the owner's view with `createdAt` as ms epoch (number, the client's `LeadInfo`), `roleId` (= `vacancy`),
+  `status`, plus all the other fields (`institutionKind` added; `consentAt`, `updatedAt` stay ISO strings).
+- **One quiz bank**: the frontend's (`vendor/frontend/web/src/lib/api/mock/quiz.ts`, 8 questions `q_year`...`q_space`, options `a|b|c`). The api image
+  is built from `./api`, so the bank is generated into `api/app/data/quiz_bank.json` by `python scripts/gen_quiz_bank.py` (strict parser of the TS file,
+  `--check` for CI); `api/tests/test_quiz_bank_drift.py` fails when the vendored TS moves and the JSON does not (also: department labels, enums,
+  the bot's copy of the ids). After a submodule bump run the script and commit the JSON.
+- **POST /api/quiz/answer**: `{answers:[{question_id|questionId, answer}]}` or a bare list; `answer` = option id (`a|b|c`, case-free) or the 0-based
+  index. Response `{correct, total, score 0..100, results:[{question_id, questionId, correct, correctAnswer}], answered, completed, bankTotal}`:
+  `total` is the number of questions answered so far (the client's `total`), `score = round(100 * correct / total)` halves up like `Math.round`.
+  Questions already answered are skipped in a batch (first answer stays, not re-scored, like fakeApi); a batch with nothing new -> 409
+  `quiz_already_completed` (`details.completed` says whether the bank is done). 422 `unknown_question | invalid_answer_format | validation_error`.
+  GET /api/quiz/questions: `options` texts + `optionIds`, `progress` has the same scalars + `answeredIds`. Summary `quizResult` = the same scalars or null.
+- Rows of the S5 bank (`q1978`...) stay in `quiz_answers` but are never counted (API: `quiz_counts`/progress filter by the bank ids; bot `/stats` filters
+  by `format.QUIZ_QUESTION_IDS`). `leads.quiz_score` is still the number of correct answers (the bot prints it as `x/8`).
+- **HR bot**: the card shows `🎓 university · вуз|колледж · курс: N` and `🧭 Направление: <department label>`; CSV has `вид учреждения`; quiz total is 8.
+
+
+## S11 / S12 decisions (vendored game core, `lib/core`)
+
+- **Contract (S11):** `vendor/frontend` is pinned to frontend `main` (`422b6fc`); `contract/generate.mjs` tolerates a missing / non-union
+  `SimEvent`. `Command` has 27 variants (`tick` is gone: API 422 `validation_error`, sim 400 unknown command), `Order.etaAt?`,
+  `GameSnapshot.version?`, `CommandResult.{version,replayed,code}?` are generated. `LeadForm` is not part of the generated union (leads are
+  validated by the API, S9). The `sim` image is tagged `mosprom-sim:<vendor sha>` (`SIM_COMMIT=$(scripts/simcommit.sh)`).
+- **Sim engine (S12):** `sim/src/engine.ts` calls the pure functions of `$lib/core` (`migrateState`, `freshState`, `advanceState`,
+  `applyCommand`, `snapshotOf`) - the same ones the frontend's reference server runs (`core/http/fakeApi.ts`), so client and server count
+  bit for bit. No `MockGameApi`, no `localStorage` shim, no `Date.now` patching, no mutex: every call works on a `structuredClone` of the
+  request state (the caller's object is never touched), time is a parameter. HTTP API of the sim is unchanged (`/v1/*`).
+- **State shape (schema `v: 2`):** top-level `shiftsLeft` / `shiftsDay` (were in `season`), `history: {undo[], redo[]}` (compact inverse
+  diffs of the layout, max 20 steps; was memory-only in the mock), `season: {id, startsAt, endsAt}`, no `prodAt` / `discReal`; `layoutV: 2`.
+  The API only reads `lastTick`, `season.{id,startsAt,endsAt}` (alignment), `sim.layout`, `sim.stars|shipped|rejected` (season reset),
+  `player.{university,ageConfirmed}` and `meta`, all unchanged in v2; `seasons.align_state` therefore works on v1 and v2 alike.
+- **Migration:** lazy and in place, on every load: `loadState` = `structuredClone` + `migrateState` (v1 -> v2: shift counter moved to the root,
+  `history` added, 12x10 hangar upgraded) + dropping the mock-only `clock` / `lastSeenReal`. Nothing is migrated in bulk: the migrated state is
+  persisted by the next write (any bootstrap / factory/me / advance / command; `/v1/snapshot` reads migrate on a copy). A state with `v` newer
+  than the core (`STATE_V`) is a sim 400 `bad_request`. Unknown top-level fields (`meta.idempotency`, `meta.speed`, ...) are kept as is.
+  Tested on real states dumped from the dev DB (`sim/test/fixtures/v1-states.json`) and on a factory played over HTTP on the old sim
+  (`v1-played.json`, snapshot parity with what the old sim returned).
+- **Time:** `now` is a parameter; every entry point uses `max(now, state.lastTick)`. A command arriving after a gap beyond the 8 h cap first
+  runs the capped catch-up *with* the offline report (the core's `applyCommand` catches up silently).
+- **Offline report:** the core builds it on `advanceState(.., {offlineReport: true})` and replaces the previous one. `background` advances
+  keep accumulating into an unseen report (`mergeOffline`, wrapper in `engine.ts`); the other reasons replace it.
+- **Rejection codes:** `r.code` of the core when present (today `daily_limit_exceeded`); `submitShift` plausibility (`minigame_too_short`,
+  `impossible_score`) is decided in the engine before the core, in the order of the reference server; the remaining machine reasons
+  (`season_closed`, `insufficient_funds`, `not_found`) come from the message table in `sim/src/reasons.ts` until the core codes them
+  itself (a drift test scans the vendored lib for new messages). Everything else is `rejected`.
+- **Bots:** lib/core has its own deterministic bots (`core/bots.ts`, 1300, only used by `leaderboardOf` / `visitOf` when no board is given).
+  The server keeps its own `seed_bots` (rows in `users` / `factories`, ranked by SQL together with real players, with stored layouts),
+  because the leaderboard, visits, season results and analytics are DB-backed; the sim passes no board to `snapshotOf` (the API sets
+  `snapshot.rank` itself), so the core's generated bots never reach a response.
+- **`etaAt`:** `scheduleOrders` runs at the end of every `advanceState` / `applyCommand`: every loading order gets `etaAt` while its line
+  can finish it within 48 h; a rebuild / upgrade / break shifts it, a cut line removes it, undo brings it back.
+- **State size:** ~31 KB after 158 commands (incl. a full 20-step undo history and the 50-entry idempotency log) on the 48-building demo
+  layout; the 150 KB audit is a regular test.

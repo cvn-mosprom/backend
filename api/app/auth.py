@@ -1,6 +1,7 @@
 """Authentication: Telegram Mini Apps initData (HMAC) + dev mode, `current_user` upsert.
 
-Header: `Authorization: tma <raw initData>` (prod) or `Authorization: dev <tg_id>[:<name>]` (DEV_AUTH=1).
+Header: `Authorization: tma <raw initData>` (prod) or `Authorization: dev <tg_id>[:<name>]` (DEV_AUTH=1); the web client
+sends `X-Telegram-Init-Data: <raw initData>` or (dev only) `X-Dev-User: <tg_id>` instead, see `credentials()` for the priority.
 Stage 1 (`get_identity`) is DB-free and memoised on the request; stage 2 (`current_user`) upserts the user row.
 """
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Annotated
 from urllib.parse import parse_qsl
 
 from fastapi import Depends, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .errors import AppError
@@ -29,6 +30,7 @@ AUTH_CACHE_TTL_S = 300
 FUTURE_SKEW_S = 300  # tolerated clock skew for an auth_date from the future
 LAST_SEEN_THROTTLE = timedelta(seconds=60)
 MAX_TG_ID = 2**63 - 1  # users.tg_id is a signed bigint
+START_PARAM_MAX = 128
 
 
 @dataclass(frozen=True)
@@ -99,15 +101,28 @@ def parse_dev_header(value: str) -> Identity:
     return Identity(tg_id=tg_id, first_name=name.strip()[:64] or f"Dev{tg_id}")
 
 
+def credentials(request: Request) -> tuple[str, str]:
+    """(scheme, value) of the caller's credentials. Priority: `Authorization: tma|dev <v>`, then the web client's
+    `X-Telegram-Init-Data: <initData>` (= tma), then `X-Dev-User: <tg_id>` (= dev). The first header PRESENT wins even
+    when its value is unusable, so a bad `Authorization` is never rescued by a dev header."""
+    headers = request.headers
+    if (header := headers.get("authorization")) is not None and header.strip():
+        scheme, _, value = header.partition(" ")
+        return scheme.lower(), value.strip()
+    if (init := headers.get("x-telegram-init-data")) is not None:
+        if not init.strip():
+            raise AppError("unauthorized", "X-Telegram-Init-Data is empty")
+        return "tma", init.strip()
+    if (dev := headers.get("x-dev-user")) is not None:
+        return "dev", dev.strip()
+    raise AppError("unauthorized", "Authorization, X-Telegram-Init-Data or X-Dev-User header is required")
+
+
 async def _authenticate(request: Request) -> Identity:
     settings: Settings = request.app.state.settings
-    header = request.headers.get("authorization")
-    if not header:
-        raise AppError("unauthorized", "Authorization header is required")
-    scheme, _, value = header.partition(" ")
-    scheme, value = scheme.lower(), value.strip()
+    scheme, value = credentials(request)
 
-    if scheme == "dev" and settings.dev_auth_enabled:
+    if scheme == "dev" and settings.dev_auth_enabled:  # never in prod: APP_ENV=prod forces dev_auth_enabled off
         return parse_dev_header(value)
     if scheme != "tma":  # includes `dev` while DEV_AUTH is off
         raise AppError("unauthorized", "Unsupported authorization scheme")
@@ -182,6 +197,27 @@ async def upsert_user(sessionmaker, ident: Identity) -> User:
             .returning(User)
         )
         return (await session.execute(stmt)).scalar_one()
+
+
+def clean_start_param(raw: str | None) -> str | None:
+    """`?start_param=` of the web client (a Telegram start_param, or `?startapp=` / `?src=` outside Telegram): trimmed;
+    empty, over-long or with control characters -> None (ignored, never an error: bootstrap must not fail on it)."""
+    value = (raw or "").strip()
+    if not value or len(value) > START_PARAM_MAX or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        return None
+    return value
+
+
+async def adopt_start_param(sessionmaker, user: User, raw: str | None) -> None:
+    """Fallback source for clients outside Telegram: write the query `start_param` into `users.source` only while it is
+    empty. initData's own start_param was already stored by `upsert_user`, so it always wins over the query."""
+    value = clean_start_param(raw)
+    if value is None or user.source:
+        return
+    async with sessionmaker() as session, session.begin():
+        await session.execute(update(User).where(User.id == user.id, or_(User.source.is_(None), User.source == ""))
+                              .values(source=value))
+    user.source = value
 
 
 async def current_user(request: Request) -> User:

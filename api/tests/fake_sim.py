@@ -5,9 +5,11 @@ Not a game: just enough deterministic semantics to test the API around it.
   * catch-up: +1 credit and +1 shipped bottle per second since `lastTick`, capped by `capHours` / 8 h;
   * `place` costs 100 credits (`insufficient_funds` when short), `submitShift` consumes `season.shiftsLeft`
     (`daily_limit_exceeded` at 0, `minigame_too_short` below 400 ms, `impossible_score` outside 0..1 - the sim's second line
-    behind the API's own checks), `acceptOrder` is rejected without `code` (the generic fallback), tick/undo/redo are
-    rejected like the real sim does until `history_in_state` is switched on (then undo/redo are ordinary accepted commands
-    and `/health` says `historyInState: true`); `bloat` pads the state of every command (state size guard);
+    behind the API's own checks), `acceptOrder` is rejected without `code` (the generic fallback), undo/redo are
+    rejected (`history_unavailable`, a sim without history in the state) until `history_in_state` is switched on (then
+    they are ordinary accepted commands and `/health` says `historyInState: true`, which is what the real sim does since
+    S12: its state holds the undo history); `tick` left the contract, the API never forwards it; `bloat` pads the state of
+    every command (state size guard);
   * season: `state.sim.stars` (when present) is the star count of the snapshot; `/v1/bootstrap` + `/v1/advance` emulate the
     mock's own season roll (MockGameApi.rollSeason: `now - season.endsAt >= 1 h` -> id + 1, stars = 0) and count it in
     `self.rolls`, so a test can prove that the API's server-side alignment keeps the sim from ever rolling by itself;
@@ -137,9 +139,8 @@ class FakeSim:
             self._catch_up(state, b["now"])
             state[t] = state.get(t, 0) + 1  # a visible effect
             return self._out(state, b["now"], {"ok": True, "toast": "Отменено" if t == "undo" else "Возвращено"})
-        if t in ("tick", "undo", "redo"):  # not served (real sim: REJECTED_COMMANDS)
-            code = "tick_removed" if t == "tick" else "history_unavailable"
-            return self._out(state, b["now"], {"ok": False, "error": code, "code": code})
+        if t in ("undo", "redo"):  # a sim without history in the state (the real one has it since S12)
+            return self._out(state, b["now"], {"ok": False, "error": "history_unavailable", "code": "history_unavailable"})
         self._catch_up(state, b["now"])
 
         def reject(error: str, code: str | None) -> dict[str, Any]:

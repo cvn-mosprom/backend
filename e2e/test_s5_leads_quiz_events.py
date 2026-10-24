@@ -29,7 +29,8 @@ DOCKER = pytest.mark.skipif(os.environ.get("E2E_DOCKER") != "1", reason="set E2E
 sys.path.insert(0, str(ROOT / "api"))
 from app import quiz_bank  # noqa: E402
 
-CORRECT = {q.id: q.correct for q in quiz_bank.QUESTIONS}
+CORRECT = {q.id: q.correct_id for q in quiz_bank.QUESTIONS}  # S9: the option id the client sends (a|b|c)
+WRONG = {q.id: q.option_ids[(q.correct + 1) % len(q.options)] for q in quiz_bank.QUESTIONS}
 
 
 def sql(query: str) -> str:
@@ -92,6 +93,22 @@ def test_lead_happy_path_reaches_db_and_outbox(api: Api):
     assert row == "Е2Е Тестов|new|t|t"
     kinds = sql(f"SELECT kind FROM outbox WHERE payload->>'user_id' = '{uid}' ORDER BY id")
     assert kinds == "lead_created"
+
+
+def test_client_lead_form_and_leadinfo(api: Api):
+    """S9: the LeadForm exactly as vendor/frontend buildLead() sends it; GET /api/leads/me is the client's LeadInfo."""
+    form = {"fullName": "Иван Иванов", "birthDate": years_ago(21), "tgUsername": "e2e_ivan", "university": "МГУ",
+            "institutionKind": "college", "course": "2", "department": "bottling", "roleId": "operator",
+            "practiceType": "paid", "consent": True, "consentVersion": "2026-10-24"}
+    r = post(api, "/api/leads", form)
+    assert r.status_code == 201, r.text
+    me = api.http.get("/api/leads/me").json()
+    assert me["status"] == "new" and me["roleId"] == "operator"
+    assert type(me["createdAt"]) is int and abs(me["createdAt"] - now_ms()) < 60_000  # ms epoch, not an ISO string
+    uid = uid_of(api)
+    assert sql(f"SELECT telegram, direction, institution_kind, consent_text_version, vacancy FROM leads WHERE user_id = {uid}") == (
+        "e2e_ivan|Розлив|college|2026-10-24|operator")
+    assert {"senior", "profile_direction"} <= set(me["tags"])  # a college student counts as senior, Розлив is a profile direction
 
 
 def test_legacy_form_needs_age_confirmation_and_maps_contact(api: Api):
@@ -173,26 +190,30 @@ def test_quiz_flow_and_summary(api: Api):
     q = api.http.get("/api/quiz/questions")
     assert q.status_code == 200
     body = q.json()
-    assert len(body["questions"]) == 10 and all(set(x) == {"id", "text", "options"} for x in body["questions"])
-    assert "correct" not in q.text and body["progress"]["answered"] == 0
+    assert len(body["questions"]) == 8 and all(set(x) == {"id", "text", "options", "optionIds"} for x in body["questions"])
+    assert "correct" not in json.dumps(body["questions"]) and body["progress"]["answered"] == 0
     assert {x["id"] for x in body["questions"]} == set(CORRECT)
-    first = [{"questionId": qid, "answer": a} for qid, a in list(CORRECT.items())[:3]]
-    first[2]["answer"] = (first[2]["answer"] + 1) % 4  # one wrong
+    ids = list(CORRECT)
+    # the client's request: { answers: [{ question_id, answer: 'a'|'b'|'c' }] }; the third answer is wrong
+    first = [{"question_id": qid, "answer": CORRECT[qid]} for qid in ids[:2]] + [{"question_id": ids[2], "answer": WRONG[ids[2]]}]
     r = post(api, "/api/quiz/answer", {"answers": first})
     assert r.status_code == 200, r.text
-    assert [x["correct"] for x in r.json()["results"]] == [True, True, False] and r.json()["score"] == 2
-    e = err(post(api, "/api/quiz/answer", [{"questionId": "q1978", "answer": 0}]))
+    out = r.json()
+    assert [x["correct"] for x in out["results"]] == [True, True, False] and [x["question_id"] for x in out["results"]] == ids[:3]
+    assert (out["correct"], out["total"], out["score"]) == (2, 3, 67)
+    e = err(post(api, "/api/quiz/answer", [{"question_id": ids[0], "answer": CORRECT[ids[0]]}]))
     assert e["code"] == "quiz_already_completed"
-    assert err(post(api, "/api/quiz/answer", [{"questionId": "nope", "answer": 0}]))["code"] == "unknown_question"
-    assert err(post(api, "/api/quiz/answer", [{"questionId": "q2000", "answer": 9}]))["code"] == "invalid_answer_format"
-    rest = [{"questionId": qid, "answer": a} for qid, a in list(CORRECT.items())[3:]]
+    assert err(post(api, "/api/quiz/answer", [{"question_id": "nope", "answer": "a"}]))["code"] == "unknown_question"
+    assert err(post(api, "/api/quiz/answer", [{"question_id": ids[5], "answer": "z"}]))["code"] == "invalid_answer_format"
+    rest = [{"question_id": qid, "answer": CORRECT[qid]} for qid in ids[3:]]  # the index form works too: see api tests
     r = post(api, "/api/quiz/answer", rest)
-    assert r.status_code == 200 and r.json()["completed"] is True and r.json()["score"] == 9
-    assert post(api, "/api/leads", lead_body()).json()["quizScore"] == 9
+    assert r.status_code == 200 and r.json()["completed"] is True
+    assert (r.json()["correct"], r.json()["total"], r.json()["score"]) == (7, 8, 88)
+    assert post(api, "/api/leads", lead_body()).json()["quizScore"] == 7
     s = api.http.get("/api/season/summary").json()
-    assert s["quizResult"] == {"score": 9, "answered": 10, "total": 10, "completed": True}
+    assert s["quizResult"] == {"correct": 7, "total": 8, "score": 88, "answered": 8, "completed": True, "bankTotal": 8}
     assert s["leadStatus"] == "new"
-    assert "high_quiz" in api.http.get("/api/leads/me").json()["tags"]
+    assert "high_quiz" in api.http.get("/api/leads/me").json()["tags"]  # 7 of 8 >= 6 of 8
     assert err(post(api, "/api/quiz/answer", rest[:1]))["code"] == "quiz_already_completed"
 
 
@@ -274,8 +295,8 @@ def test_lead_quiz_events_with_sim_stopped(api: Api, sim_stopped):
     assert sql(f"SELECT full_name FROM leads WHERE user_id = {uid}") == "Лид При Мёртвом Sim"  # reached the DB
     assert sql(f"SELECT kind FROM outbox WHERE payload->>'user_id' = '{uid}'") == "lead_created"
     assert api.http.get("/api/leads/me").status_code == 200
-    q = post(api, "/api/quiz/answer", [{"questionId": "q1978", "answer": 0}])
-    assert q.status_code == 200 and q.json()["score"] == 1
+    q = post(api, "/api/quiz/answer", [{"question_id": "q_year", "answer": CORRECT["q_year"]}])
+    assert q.status_code == 200 and q.json()["correct"] == 1 and q.json()["score"] == 100
     assert api.http.get("/api/quiz/questions").status_code == 200
     assert post(api, "/api/events", {"events": [ev("lead_submit", role="lab")]}).json() == {"accepted": 1}
     assert sql(f"SELECT count(*) FROM events WHERE user_id = {uid}") == "1"

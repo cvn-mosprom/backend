@@ -353,6 +353,7 @@ class Order(BaseModel):
     deadline: float
     defect: float | None = None
     dockId: str | None = None
+    etaAt: float | None = None
     hours: float | None = None
     id: str
     loaded: float
@@ -470,12 +471,14 @@ class GameSnapshot(BaseModel):
     skills: SkillProfile
     undoLabel: str | None = None
     undoSteps: float | None = None
+    version: float | None = None
 
 
 class CommandResultFailed(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
+    code: str | None = None
     error: str
     ok: Literal[False]
     snapshot: GameSnapshot | None = None
@@ -486,9 +489,11 @@ class CommandResultOk(BaseModel):
         extra='forbid',
     )
     ok: Literal[True]
+    replayed: bool | None = None
     rewards: Rewards | None = None
     snapshot: GameSnapshot
     toast: str | None = None
+    version: float | None = None
 
 
 class CommandResult(RootModel[CommandResultOk | CommandResultFailed]):

@@ -361,59 +361,5 @@
     {
       "type": "offlineSeen"
     }
-  ],
-  "tick": [
-    {
-      "type": "tick",
-      "from": 1761253200000,
-      "to": 1761253205000,
-      "seed": 12345,
-      "events": [
-        {
-          "t": 1761253200100,
-          "k": "spawn",
-          "node": "b1",
-          "item": "preform"
-        },
-        {
-          "t": 1761253200900,
-          "k": "fill",
-          "node": "b4",
-          "fluid": "kvas",
-          "liters": 1.5
-        },
-        {
-          "t": 1761253201500,
-          "k": "pack",
-          "node": "b6"
-        },
-        {
-          "t": 1761253202000,
-          "k": "work",
-          "node": "b4",
-          "sec": 2
-        },
-        {
-          "t": 1761253203000,
-          "k": "reject",
-          "node": "b5",
-          "sku": "kvas_ochakovsky_15"
-        },
-        {
-          "t": 1761253204000,
-          "k": "in",
-          "node": "b7",
-          "sku": "kvas_ochakovsky_15",
-          "unit": "box",
-          "defect": 0.02
-        }
-      ]
-    },
-    {
-      "type": "tick",
-      "from": 1761253200000,
-      "to": 1761253200050,
-      "events": []
-    }
   ]
 }

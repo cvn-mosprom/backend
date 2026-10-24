@@ -10,8 +10,8 @@ Rules enforced in this module:
   * the sim gets `now = max(server_now_ms, state.lastTick)` (monotonic per factory);
   * `submitShift` is checked by app/shift.py under the lock BEFORE the sim (a violation is a recorded rejection: no sim
     command, no version bump, no shift consumed) and an accepted one is logged in `shifts` in the same transaction;
-  * undo/redo have no special case: they go to the sim like any command (rejected while the sim has no history in the
-    state, a normal effect command the day the sim serves them).
+  * undo/redo have no special case: they go to the sim like any command (the sim serves them from `state.history`
+    since S12: a normal effect command with version + 1; with nothing to undo they are an ordinary rule rejection).
 """
 from __future__ import annotations
 
@@ -40,8 +40,9 @@ log = logging.getLogger("mosprom.game")
 OFFLINE_CAP_H = 8.0
 IDEMPOTENCY_MAX = 50
 IDEMPOTENCY_TTL_S = 600
-FEATURES: dict[str, bool] = {"undo": False, "serverOrderEta": False}  # `undo` is replaced by the sim /health flag
-STATE_WARN_BYTES = 150 * 1024  # spec "not more than 150 KB" (guaranteed only after S1U); bigger writes log state_bytes
+FEATURES: dict[str, bool] = {"undo": False, "serverOrderEta": True,  # `undo` is replaced by the sim /health flag; the core schedules etaAt
+                             "quiz": True, "leads": True}  # S8: the web client's flags (it defaults them to true)
+STATE_WARN_BYTES = 150 * 1024  # spec "not more than 150 KB" (the core keeps ~10-30 KB incl. the undo diffs); bigger writes log state_bytes
 # sim rejection reasons that become the top-level error code; every other reason is 422 command_rejected
 TOP_LEVEL_REASONS = frozenset({"daily_limit_exceeded", "minigame_too_short", "impossible_score"})
 SPEED_WINDOW_MS = 60_000  # min distance between speed baselines (see measure_speed)
@@ -50,7 +51,7 @@ SPEED_WINDOW_MS = 60_000  # min distance between speed baselines (see measure_sp
 # ---------------------------------------------------------------- pure helpers
 
 def command_payload(cmd: BaseModel) -> dict[str, Any]:
-    """The validated command as the sim expects it: wire names (`tick.from`), only what the client sent, `null` of an
+    """The validated command as the sim expects it: wire names, only what the client sent, `null` of an
     optional field dropped (TS `?:`) but `null` of a required-nullable field kept (`paint.color: null` = erase)."""
     data = cmd.model_dump(by_alias=True, exclude_unset=True, mode="json")
     for name, field in type(cmd).model_fields.items():
@@ -89,7 +90,8 @@ def _is_num(v: Any) -> bool:
 def measure_speed(snapshot: dict[str, Any], state: dict[str, Any]) -> int | None:
     """Bottles per hour for `factories.speed_bph` (leaderboard `speed` tab), or None = keep the stored value.
 
-    The sim snapshot does not expose the flow rate (`solveFlow().bottlesPerHour` of the mock), so the rate is derived:
+    The snapshot of lib/core (`snapshotOf`) does not expose the flow rate (`solveFlow().bottlesPerHour` stays inside the
+    core and only feeds its own speed board), so the rate is derived:
     `snapshot.factory.bottlesPerHour` when a sim ever provides it, else the measured throughput = d(produced) / d(time)
     between a baseline kept in `state.meta.speed` ({t, p}) and now. The baseline moves only after >= 60 s, so frequent
     polling (every few seconds) does not zero the rate; the window is capped at the 8 h offline cap. Follow-up (sim):
@@ -187,7 +189,8 @@ def rejection(reason: str, message: str, version: int, snapshot: dict[str, Any],
     details: dict[str, Any] = {"reason": reason, "message": message, "version": version, "snapshot": snapshot}
     if replayed:
         details["replayed"] = True
-    return AppError(code, message, status=422, details=details)
+    # the web client applies a top-level `snapshot` (with `version` inside) next to `error`; details.snapshot stays
+    return AppError(code, message, status=422, details=details, body_extra={"snapshot": {**snapshot, "version": version}})
 
 
 def building_boost(state: dict[str, Any], building_id: str) -> float | None:
@@ -244,7 +247,7 @@ class GameService:
 
     async def _lock(self, session: AsyncSession, user_id: int, *, skip_locked: bool = False) -> _Locked | None:
         """Row lock + season alignment. The state is rewritten to the server's newest season BEFORE any sim call
-        (app/seasons.py: why the mock's own season roll can then never fire). `skip_locked=True` (background catch-up):
+        (app/seasons.py: why the core's own season roll can then never fire). `skip_locked=True` (background catch-up):
         None when somebody else holds the row; otherwise a missing factory is 404 factory_not_found."""
         q = select(Factory.state, Factory.version, Factory.season_id).where(Factory.user_id == user_id)
         row = (await session.execute(q.with_for_update(skip_locked=skip_locked))).one_or_none()
@@ -262,7 +265,7 @@ class GameService:
 
     async def _set_rank(self, session: AsyncSession, season_id: int, user_id: int, snapshot: dict[str, Any],
                         stars: int | None = None) -> None:
-        """snapshot.rank = the REAL general place / total (the sim's own rank is the mock's fake bot field)."""
+        """snapshot.rank = the REAL general place / total (the sim passes no leaderboard to the core, so its snapshots carry no rank)."""
         place, total = await rank_of(session, season_id, user_id, bots_enabled=self.bots_enabled, mine=stars)
         snapshot["rank"] = {"place": place, "total": total}
 
@@ -292,7 +295,7 @@ class GameService:
         if version is not None:
             values["version"] = version
         size = len(orjson.dumps(values["state"]))
-        if size > STATE_WARN_BYTES:  # size audit (spec: <= 150 KB, guaranteed only once the undo history is diffs)
+        if size > STATE_WARN_BYTES:  # size audit (spec: <= 150 KB)
             log.warning("factory state is over the size target", extra={"fields": {
                 "state_bytes": size, "limit_bytes": STATE_WARN_BYTES, "user_id": user_id}})
         await session.execute(update(Factory).where(Factory.user_id == user_id).values(**values))
@@ -389,7 +392,7 @@ class GameService:
             else:
                 if locked.version != version:
                     raise AppError("version_conflict", "Factory changed since your last sync, refresh and retry",
-                                   details={"current_version": locked.version})
+                                   details={"current_version": locked.version, "version": locked.version})
                 now = monotonic_now(locked.state)
                 rule = validate_shift(cmd.get("result")) if cmd.get("type") == "submitShift" else None
                 if rule is not None:  # impossible shift: refused before the sim, recorded like any rejection

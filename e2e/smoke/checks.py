@@ -14,8 +14,9 @@ DOCUMENTED_503 = {"sim_unavailable", "db_unavailable", "redis_unavailable", "con
 
 
 def error_shape_problems(body: object) -> list[str]:
-    """`{"error": {"code", "message", "details"}}` and nothing else."""
-    if not isinstance(body, dict) or set(body) != {"error"}:
+    """`{"error": {"code", "message", "details"}}` and nothing else (S8: a rejected command also has a top-level `snapshot`)."""
+    allowed = ({"error"}, {"error", "snapshot"})
+    if not isinstance(body, dict) or set(body) not in allowed or not isinstance(body.get("snapshot", {}), dict):
         return [f"error body must be exactly {{'error': ...}}, got {str(body)[:120]!r}"]
     e = body["error"]
     if not isinstance(e, dict) or set(e) != {"code", "message", "details"}:

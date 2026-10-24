@@ -72,8 +72,11 @@ function genSchema(type) {
  * `<A><suffix>` + `oneOf` of $refs, and add an OpenAPI-style `discriminator` so that
  * datamodel-code-generator emits a pydantic discriminated union.
  */
-function nameVariants(schema, defName, key, suffix, { discriminator = true } = {}) {
+function nameVariants(schema, defName, key, suffix, { discriminator = true, optional = false } = {}) {
 	const def = schema.definitions[defName];
+	// `optional`: the definition may be absent or no longer a union (e.g. `SimEvent` left the contract together with
+	// `tick`): nothing to name then. Required definitions (Command, CommandResult) still fail loudly.
+	if (optional && (!def || !Array.isArray(def.anyOf))) return [];
 	if (!def || !Array.isArray(def.anyOf)) throw new Error(`${defName}: expected an anyOf union`);
 	const refs = [];
 	const mapping = {};
@@ -95,7 +98,7 @@ function nameVariants(schema, defName, key, suffix, { discriminator = true } = {
 function buildSchemas() {
 	const command = genSchema('Command');
 	const variants = nameVariants(command, 'Command', 'type', 'Command');
-	nameVariants(command, 'SimEvent', 'k', 'SimEvent');
+	nameVariants(command, 'SimEvent', 'k', 'SimEvent', { optional: true });
 
 	const snapshot = genSchema('GameSnapshot');
 	const result = genSchema('CommandResult');
@@ -179,7 +182,7 @@ from typing import Any
 from .command import Command
 from .snapshot import CommandResult, GameSnapshot
 
-# Frozen list of command discriminator values, in declaration order of types.ts (includes \`tick\`).
+# Frozen list of command discriminator values, in declaration order of types.ts.
 COMMAND_TYPES: tuple[str, ...] = (
 ${variants.map((v) => `    "${v}",`).join('\n')}
 )

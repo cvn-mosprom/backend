@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from app.config import Settings, parse_id_list
 from app.hr import handlers, queries, runtime
+from app.hr.format import QUIZ_TOTAL, render_card
 from hr_support import (ADMIN, ADMIN2, NOW, STRANGER, add_lead, add_user, fake_callback, fake_message, make_settings,
                         reply_text, run_db, x)
 
@@ -192,8 +193,8 @@ def test_lead_card_command_and_link():
         await handlers.on_lead(m, cmd("lead", str(lid)))
         card = reply_text(m)
         for part in ("Иванова Анна", "+79991112233", "anna@example.com", "@anna", "МГУПП", "Пищевая инженерия", "курс: 4",
-                     "Оператор линии розлива", "готов к сезону", "оплачиваемая практика", "#senior #high_quiz",
-                     "Лаборант ОТК", "место в сезоне: 2", "квиз: 9/10", "Источник: ref_1", "Новый"):
+                     "МГУПП · вуз · курс: 4", "🧭 Направление: Пищевая инженерия", "Оператор линии розлива", "готов к сезону", "оплачиваемая практика", "#senior #high_quiz",
+                     "Лаборант ОТК", "место в сезоне: 2", "квиз: 7/8", "Источник: ref_1", "Новый"):
             assert part in card, part
         assert "лет" in card or "год" in card
         kb = m.answer.call_args.kwargs["reply_markup"]
@@ -248,10 +249,11 @@ def test_export_csv_content_and_encoding():
         a = rows[1]
         assert a["телефон"] == "+79991112233" and a["email"] == "anna@example.com" and a["telegram"] == "anna"
         assert a["вуз"] == "МГУПП" and a["направление"] == "Пищевая инженерия" and a["курс"] == "4"
+        assert a["вид учреждения"] == "вуз" and rows[0]["вид учреждения"] == "колледж" and rows[0]["направление"] == "Розлив"
         assert a["вакансия"] == "Оператор линии розлива" and a["теги"] == "senior,high_quiz"
         assert a["лучшая профессия"] == "Лаборант ОТК" and a["место в сезоне"] == "2" and a["источник"] == "ref_1"
         assert a["дата рождения"] == "2003-05-01" and int(a["возраст"]) >= 22
-        assert a["квиз (верных из 10)"] == "9" and a["статус"] == "new"
+        assert a["квиз (верных из 8)"] == "7" and a["статус"] == "new"
         assert rows[0]["статус"] == "contacted" and rows[0]["email"] == ""
         assert "Сидорова" not in doc.data.decode("utf-8-sig") and "Бот Ботов" not in doc.data.decode("utf-8-sig")
         assert doc.data.count(b"\r\n") == 3  # header + 2 rows
@@ -332,7 +334,7 @@ def test_sources_conversion_excludes_bots_and_revoked():
 def test_stats_numbers():
     async def go(sm):
         async with sm() as s:
-            d = await queries.stats(s, 10)
+            d = await queries.stats(s, QUIZ_TOTAL)
         assert (d["users"], d["new_today"], d["dau"], d["factories"], d["shifts_today"]) == (5, 5, 3, 5, 2)
         assert (d["quiz_started"], d["quiz_completed"], d["quiz_avg"]) == (2, 1, 7.0)
         assert d["leads"] == {"new": 1, "contacted": 1} and d["leads_revoked"] == 1
@@ -340,7 +342,7 @@ def test_stats_numbers():
         await handlers.on_stats(m)
         out = reply_text(m)
         assert "Игроков: <b>5</b>" in out and "DAU сегодня: <b>3</b>" in out and "Цехов: 5, смен сегодня: 2" in out
-        assert "Анкет: <b>2</b>" in out and "отозвано 1" in out and "прошли 1, средний результат 7.0/10" in out
+        assert "Анкет: <b>2</b>" in out and "отозвано 1" in out and "прошли 1, средний результат 7.0/8" in out
 
     run_db(go)
 
@@ -443,5 +445,32 @@ def test_set_lead_status_outcomes():
         async with sm() as s:
             out, card = await queries.set_lead_status(s, lid, "rejected", "tester", datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc))
         assert out == "ok" and card["status"] == "rejected" and "2026-01-02 03:04 UTC · tester: contacted → rejected" in card["hr_note"]
+
+    run_db(go)
+
+
+# ---------------------------------------------------------------- S9: institution kind + department in the card
+
+def test_card_shows_institution_kind_and_department_label():
+    base = {"id": 7, "full_name": "Иван Иванов", "university": "МГУ", "course": "3", "status": "new", "tags": []}
+    card = render_card({**base, "institution_kind": "vuz", "direction": "Лаборатория"}, new=True)
+    assert "🎓 МГУ · вуз · курс: 3" in card and "🧭 Направление: Лаборатория" in card
+    card = render_card({**base, "institution_kind": "college", "direction": "Склад и логистика"})
+    assert "🎓 МГУ · колледж · курс: 3" in card and "🧭 Направление: Склад и логистика" in card
+    plain = render_card({**base, "institution_kind": None, "direction": None})  # an older lead: nothing invented
+    assert "🎓 МГУ · курс: 3" in plain and "Направление" not in plain and "вуз" not in plain and "колледж" not in plain
+    odd = render_card({**base, "institution_kind": "<b>x</b>", "direction": "<i>y</i>"})  # escaped, never trusted
+    assert "&lt;b&gt;x&lt;/b&gt;" in odd and "&lt;i&gt;y&lt;/i&gt;" in odd
+
+
+def test_quiz_numbers_ignore_answers_of_the_old_bank():
+    """u4 has 10 answers of the S5 bank (q1978...), u2 has 5 more besides its 3 current ones: none of them count."""
+    async def go(sm):
+        async with sm() as s:
+            d = await queries.stats(s, QUIZ_TOTAL)
+        assert (d["quiz_started"], d["quiz_completed"], d["quiz_avg"]) == (2, 1, 7.0)
+        async with sm() as s:  # asking for five OLD ids instead proves the seed really holds old-bank rows (u2: 5, u4: 5 of 10)
+            d = await queries.stats(s, QUIZ_TOTAL, quiz_ids=("q1978", "q1979", "q1996", "q1999", "q2000"))
+        assert d["quiz_started"] == 2 and d["quiz_completed"] == 0  # five answers each: nobody completed 8
 
     run_db(go)

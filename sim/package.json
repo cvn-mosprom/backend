@@ -2,7 +2,7 @@
   "name": "mosprom-sim",
   "private": true,
   "version": "0.1.0",
-  "description": "Server-side game simulation service: runs vendor/frontend web/src/lib (MockGameApi) behind a stateless HTTP API",
+  "description": "Server-side game simulation service: runs the vendor/frontend web/src/lib/core pure functions behind a stateless HTTP API",
   "type": "module",
   "engines": {
     "node": ">=20"

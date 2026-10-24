@@ -27,7 +27,7 @@ const result = await build({
 // Guard: the server import graph must stay free of browser-only code (rendering, scenes, UI, audio, three, svelte).
 const inputs = Object.keys(result.metafile.inputs).map((p) => path.resolve(root, p));
 const lib = inputs.filter((p) => p.startsWith(libDir + path.sep)).map((p) => path.relative(libDir, p).split(path.sep).join('/'));
-const allowed = /^(api|content|sim|game)\//;
+const allowed = /^(api|content|sim|game|core)\//;
 const offenders = inputs.filter((p) => /node_modules|three|svelte/i.test(path.relative(root, p))).concat(lib.filter((p) => !allowed.test(p)));
 if (offenders.length) {
 	console.error('browser-only / unexpected modules reached the sim bundle:\n  ' + offenders.join('\n  '));

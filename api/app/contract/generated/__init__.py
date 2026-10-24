@@ -12,7 +12,7 @@ from typing import Any
 from .command import Command
 from .snapshot import CommandResult, GameSnapshot
 
-# Frozen list of command discriminator values, in declaration order of types.ts (includes `tick`).
+# Frozen list of command discriminator values, in declaration order of types.ts.
 COMMAND_TYPES: tuple[str, ...] = (
     "ageConfirm",
     "renameFactory",
@@ -41,7 +41,6 @@ COMMAND_TYPES: tuple[str, ...] = (
     "redo",
     "buildEnd",
     "offlineSeen",
-    "tick",
 )
 
 

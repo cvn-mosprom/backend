@@ -2,7 +2,7 @@
 
 (a) tutorial passes on the server   (b) reload keeps the factory   (c) two tabs on passive sync do not fight
 (d) stale action -> 409 -> resync -> retry works   (e) replay with the same key charges once
-(f) 6th shift of the day is rejected   (g) buildEnd does not touch the version   (h) undo -> history_unavailable
+(f) 6th shift of the day is rejected   (g) buildEnd does not touch the version   (h) undo/redo work, tick is a 422
 """
 
 import os
@@ -37,7 +37,7 @@ def shift_result(profession: str = "kvasovar", **over):
 def test_a_tutorial_passes_on_server(api: Api):
     boot = api.bootstrap()
     assert isinstance(boot["version"], int)
-    assert boot["features"]["undo"] is False
+    assert boot["features"]["undo"] is True and boot["features"]["serverOrderEta"] is True  # S12: lib/core in the sim
     assert {"id", "startsAt", "endsAt"} <= boot["season"].keys()
     snap = boot["snapshot"]
     assert snap["factory"]["credits"] == START_CREDITS
@@ -72,6 +72,8 @@ def test_a_tutorial_passes_on_server(api: Api):
     body = api.command({"type": "acceptOrder", "orderId": T.TUTORIAL_ORDER_ID, "dockId": dock["id"]})
     tut = order_of(body["snapshot"], T.TUTORIAL_ORDER_ID)
     assert tut["status"] in ("loading", "done") and tut["dockId"] == dock["id"]
+    if tut["status"] == "loading":  # S12: the core schedules the truck (Order.etaAt, ms epoch, not in the past)
+        assert isinstance(tut["etaAt"], (int, float)) and tut["etaAt"] >= body["snapshot"]["serverTime"], tut
     accepted_version = api.version
 
     if ORDER_WAIT_S <= 0:  # E2E_ORDER_WAIT_S=0: stop after "loading started" (production needs real time)
@@ -300,19 +302,34 @@ def test_g_build_end_does_not_change_version(api: Api):
 
 # --------------------------------------------------------------------------- (h)
 def test_h_undo_redo_tick_rejected(api: Api):
+    """S12: the history lives in the state, so undo/redo are served (and survive a re-request); `tick` left the
+    contract (frontend revision 4) and is a plain 422 validation_error that never reaches the sim."""
     boot = api.bootstrap()
     v = boot["version"]
-    assert boot["features"]["undo"] is False
-    for cmd, reason in (
-        ({"type": "undo"}, "history_unavailable"),
-        ({"type": "redo"}, "history_unavailable"),
-        ({"type": "tick", "from": 1_700_000_000_000, "to": 1_700_000_005_000, "events": []}, "tick_removed"),
-    ):
+    assert boot["features"]["undo"] is True
+    # tick: not in the Command union any more
+    r = api.raw_command({"type": "tick", "from": 1_700_000_000_000, "to": 1_700_000_005_000, "events": []}, version=v)
+    assert r.status_code == 422, r.text
+    assert err(r)["code"] == "validation_error"
+    # nothing to undo / redo yet: an ordinary rule rejection, not a transport error
+    for cmd, message in (({"type": "undo"}, "Нечего отменять"), ({"type": "redo"}, "Нечего повторять")):
         r = api.raw_command(cmd, version=v)
         assert r.status_code == 422, f"{cmd['type']}: {r.status_code} {r.text}"
         e = err(r)
-        assert e["code"] == "command_rejected", e
-        assert e["details"]["reason"] == reason
-        assert e["details"]["message"] and e["details"]["version"] == v
+        assert e["code"] == "command_rejected" and e["details"]["reason"] == "rejected", e
+        assert e["details"]["message"] == message and e["details"]["version"] == v
         assert e["details"]["snapshot"]["factory"]["credits"] == START_CREDITS
     assert api.me()["version"] == v
+
+    # place -> undo -> redo, with a fresh bootstrap/me in between (the history is part of factories.state)
+    _, place = T.BUILD[0]
+    body = api.command(place)
+    assert body["snapshot"]["undoSteps"] == 1 and len(layout_of(body["snapshot"])["buildings"]) == 1
+    assert api.bootstrap()["snapshot"]["undoSteps"] == 1
+    undone = api.command({"type": "undo"})
+    assert layout_of(undone["snapshot"])["buildings"] == []
+    assert (undone["snapshot"]["undoSteps"], undone["snapshot"]["redoSteps"]) == (0, 1)
+    assert api.me()["snapshot"]["redoSteps"] == 1
+    redone = api.command({"type": "redo"})
+    assert len(layout_of(redone["snapshot"])["buildings"]) == 1 and redone["snapshot"]["redoSteps"] == 0
+    assert redone["version"] == v + 3

@@ -18,7 +18,7 @@ ROUTES: list[tuple[str, str, Any, str]] = [
     ("GET", "/api/leads/me", None, "default"),
     ("DELETE", "/api/leads/me", None, "default"),
     ("GET", "/api/quiz/questions", None, "quiz"),
-    ("POST", "/api/quiz/answer", [{"questionId": "q1978", "answer": 0}], "quiz"),
+    ("POST", "/api/quiz/answer", [{"question_id": "q_year", "answer": "b"}], "quiz"),
     ("POST", "/api/events", {"events": [{"name": "app_open"}]}, "events"),
 ]
 ROUTE_IDS = [f"{m} {p.split('?')[0]}" for m, p, _, _ in ROUTES]

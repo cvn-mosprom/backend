@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { OFFLINE_CAP_H } from '$lib/content/balance';
-import { HISTORY_IN_STATE, accountedTo, bootstrap, catchUp, command, snapshot } from '../src/engine';
-import type { StateObject } from '../src/host';
-import { EXTRAS, H, PLAYER, T0, buildTutorialLine, newFactory, pickExtras, withExtras } from './helpers';
+import { START_CREDITS } from '$lib/content/balance';
+import { HISTORY_IN_STATE, STATE_VERSION, bootstrap, catchUp, command, snapshot, type StateObject } from '../src/engine';
+import { EXTRAS, H, PLAYER, T0, buildTutorialLine, newFactory, pickExtras, tutorialCommands, withExtras } from './helpers';
 
 type S = Record<string, any>;
 const s = (x: StateObject) => x as S;
@@ -12,7 +12,8 @@ describe('bootstrap', () => {
 	it('null state creates a factory for the player with snapshot (player/factory/orders/season)', async () => {
 		const r = await bootstrap(null, T0, PLAYER);
 		const st = s(r.state);
-		assert.equal(st.v, 1);
+		assert.equal(st.v, STATE_VERSION);
+		assert.equal(st.layoutV, 2);
 		assert.equal(st.player.id, 'u1');
 		assert.equal(st.player.tgId, 1001);
 		assert.equal(st.player.name, 'Ann');
@@ -20,15 +21,17 @@ describe('bootstrap', () => {
 		assert.equal(st.player.ageConfirmed, false);
 		assert.equal(r.snapshot.serverTime, T0);
 		assert.equal(r.snapshot.player.id, 'u1');
-		assert.equal(r.snapshot.factory.credits, 3000);
+		assert.equal(r.snapshot.factory.credits, START_CREDITS);
 		assert.equal(r.snapshot.factory.layout.buildings.length, 0);
 		assert.ok(r.snapshot.orders.length >= 1, 'the tutorial order is on the board');
 		assert.equal(r.snapshot.season.id, 1);
 		assert.equal(r.snapshot.season.closed, false);
 		assert.equal(r.snapshot.season.startsAt, T0);
-		// the clock is pinned to the request: no wall-clock leakage into the state
-		assert.deepEqual(st.clock, { real: T0, server: T0, scale: 1 });
+		// time is a parameter: nothing of the wall clock leaks into the state, and no mock leftovers
+		assert.ok(!('clock' in st) && !('lastSeenReal' in st) && !('prodAt' in st));
 		assert.equal(st.lastTick, T0);
+		assert.equal(st.shiftsLeft, 5);
+		assert.deepEqual(st.history, { undo: [], redo: [] });
 	});
 
 	it('player without optional fields', async () => {
@@ -51,7 +54,7 @@ describe('bootstrap', () => {
 		assert.deepEqual(a, b);
 	});
 
-	it('rolls to the next season 1 h after the previous one closed (mock behaviour: bootstrap/advance only)', async () => {
+	it('rolls to the next season 1 h after the previous one closed (core: every catch-up, command included)', async () => {
 		const st = await newFactory();
 		s(st).season.endsAt = T0 + H;
 		s(st).sim.stars = 12;
@@ -61,8 +64,11 @@ describe('bootstrap', () => {
 		const viaAdvance = await catchUp(st, T0 + 3 * H);
 		assert.equal(viaAdvance.snapshot.season.id, 2);
 		const viaCommand = await command(st, T0 + 3 * H, { type: 'ageConfirm' });
-		assert.equal(viaCommand.snapshot.season.id, 1);
-		assert.equal(viaCommand.snapshot.season.closed, true);
+		assert.equal(viaCommand.snapshot.season.id, 2);
+		// one hour after the close is the boundary; before it the old season stays, closed (the API aligns the season itself)
+		const gap = await command(st, T0 + H + 30 * 60_000, { type: 'ageConfirm' });
+		assert.equal(gap.snapshot.season.id, 1);
+		assert.equal(gap.snapshot.season.closed, true);
 	});
 });
 
@@ -89,26 +95,18 @@ describe('command', () => {
 		assert.equal(bad.result.ok, false);
 	});
 
-	it('tick is rejected as tick_removed and does not touch the state', async () => {
-		const st0 = withExtras(await newFactory());
-		const before = structuredClone(st0);
-		const r = await command(st0, T0 + 3 * H, { type: 'tick', from: T0, to: T0 + 1000, events: [] });
-		assert.deepEqual(r.result, { ok: false, error: 'tick_removed', code: 'tick_removed' });
-		assert.deepEqual(r.state, before, 'no catch-up on a removed command');
-		assert.equal(r.snapshot.serverTime, T0 + 3 * H);
-	});
-
-	it('undo/redo are reported as history_unavailable until history is migrated into the state', async () => {
-		const st0 = await newFactory();
-		for (const type of ['undo', 'redo'] as const) {
-			const r = await command(st0, T0 + 1000, { type });
-			assert.deepEqual(r.result, { ok: false, error: 'history_unavailable', code: 'history_unavailable' });
-		}
-	});
-
-	it('HISTORY_IN_STATE (the /health flag behind the API features.undo) mirrors the undo/redo rejection', async () => {
-		const rejected = (await command(await newFactory(), T0 + 1000, { type: 'undo' })).result.ok === false;
-		assert.equal(HISTORY_IN_STATE, !rejected, 'false while undo is rejected, true once S1U serves it');
+	it('undo / redo are served from the history inside the state (HISTORY_IN_STATE, /health historyInState)', async () => {
+		assert.equal(HISTORY_IN_STATE, true);
+		const built = await command(await newFactory(), T0 + 1000, tutorialCommands()[0]);
+		assert.equal(built.result.ok, true, built.result.error);
+		assert.equal(built.snapshot.undoSteps, 1);
+		const undone = await command(built.state, T0 + 2000, { type: 'undo' });
+		assert.equal(undone.result.ok, true, undone.result.error);
+		assert.equal(undone.snapshot.factory.layout.buildings.length, 0);
+		assert.equal(undone.snapshot.redoSteps, 1);
+		const nothing = await command(undone.state, T0 + 3000, { type: 'undo' });
+		assert.equal(nothing.result.ok, false);
+		assert.equal(nothing.result.code, 'rejected');
 	});
 
 	it('real build commands work: the whole tutorial line is placed and the first order is served', async () => {
@@ -156,12 +154,11 @@ describe('unknown top-level fields round-trip untouched', () => {
 		const st = withExtras(await newFactory());
 		check('bootstrap', (await bootstrap(st, T0 + 10 * 60_000)).state);
 	});
-	it('command: accepted, rejected, tick_removed, undo', async () => {
+	it('command: accepted, rejected, undo', async () => {
 		const st = withExtras((await buildTutorialLine(await newFactory(), T0)).state);
 		const now = T0 + 5 * H;
 		check('ok', (await command(st, now, { type: 'renameFactory', name: 'Zavod' })).state);
 		check('rejected', (await command(st, now, { type: 'renameFactory', name: 'x' })).state);
-		check('tick', (await command(st, now, { type: 'tick', from: 0, to: 1, events: [] })).state);
 		check('undo', (await command(st, now, { type: 'undo' })).state);
 		check('after long idle', (await command(st, now + 40 * H, { type: 'ageConfirm' })).state);
 	});
@@ -195,7 +192,6 @@ describe('advance', () => {
 		assert.ok(r.snapshot.factory.credits < before.factory.credits);
 		assert.ok(Object.values(r.snapshot.factory.stock ?? {}).some((e) => e && e.boxes > 0));
 		assert.ok(r.snapshot.offline && r.snapshot.offline.hours === 3 && r.snapshot.offline.capped === false);
-		assert.equal(accountedTo(r.state), t);
 	});
 
 	it('is idempotent in time: advancing to the same moment again changes nothing', async () => {
@@ -225,7 +221,6 @@ describe('advance', () => {
 		assert.equal(capped.advancedMs, 5 * H);
 		assert.ok(plain.snapshot.factory.produced! > 1000, 'an hour of production is not nothing');
 		assert.equal(s(capped.state).lastTick, built.now + 5 * H);
-		assert.equal(accountedTo(capped.state), built.now + 5 * H);
 		assert.equal(capped.snapshot.factory.produced, plain.snapshot.factory.produced);
 		assert.equal(capped.snapshot.factory.credits, plain.snapshot.factory.credits);
 		assert.deepEqual(capped.snapshot.factory.stock, plain.snapshot.factory.stock);
@@ -326,14 +321,11 @@ describe('isolation', () => {
 		}
 	});
 
-	it('globals are restored after success and after a crash inside the mock', async () => {
-		const realNow = Date.now;
+	it('a crash inside the core leaves the state of the caller untouched (the core works on a copy) and the sim usable', async () => {
 		const st = await newFactory();
-		assert.equal(typeof (globalThis as S).localStorage, 'undefined');
-		assert.equal(Date.now, realNow);
-		await assert.rejects(command(st, T0 + 1000, { type: 'place' } as never));
-		assert.equal(typeof (globalThis as S).localStorage, 'undefined');
-		assert.equal(Date.now, realNow);
-		assert.ok(Math.abs(Date.now() - T0) > 1000, 'Date.now is the wall clock again');
+		const before = structuredClone(st);
+		assert.throws(() => command(st, T0 + 1000, { type: 'place' } as never));
+		assert.deepEqual(st, before);
+		assert.equal((await command(st, T0 + 1000, { type: 'ageConfirm' })).result.ok, true);
 	});
 });

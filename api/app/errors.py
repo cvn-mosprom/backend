@@ -49,23 +49,30 @@ class AppError(Exception):
         status: int | None = None,
         details: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        body_extra: dict[str, Any] | None = None,
     ) -> None:
         self.code = code
         self.message = message or code.replace("_", " ").capitalize()
         self.status = status if status is not None else status_for(code)
         self.details = details or {}
         self.headers = headers or {}
+        self.body_extra = body_extra or {}  # top-level siblings of `error` (e.g. the web client's `snapshot` on a 422)
         super().__init__(f"{code}: {self.message}")
 
 
 def error_response(
     code: str, message: str, status: int, details: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None, body_extra: dict[str, Any] | None = None,
 ) -> Response:
     headers = dict(headers or {})
-    if status == 429 and not any(k.lower() == "retry-after" for k in headers):
-        headers["Retry-After"] = "1"  # 429 always carries Retry-After
-    body = orjson.dumps({"error": {"code": code, "message": message, "details": details or {}}})
+    details = dict(details or {})
+    if status == 429:
+        if not any(k.lower() == "retry-after" for k in headers):
+            headers["Retry-After"] = "1"  # 429 always carries Retry-After ...
+        retry = next(v for k, v in headers.items() if k.lower() == "retry-after")
+        if "retry_after" not in details and str(retry).isdigit():
+            details["retry_after"] = int(retry)  # ... and mirrors it in details.retry_after (http-contract.md)
+    body = orjson.dumps({"error": {"code": code, "message": message, "details": details}, **(body_extra or {})})
     return Response(body, status_code=status, media_type="application/json", headers=headers)
 
 
@@ -75,7 +82,7 @@ def _mark(request: Request, code: str) -> None:
 
 async def _app_error(request: Request, exc: AppError) -> Response:
     _mark(request, exc.code)
-    return error_response(exc.code, exc.message, exc.status, exc.details, exc.headers)
+    return error_response(exc.code, exc.message, exc.status, exc.details, exc.headers, exc.body_extra)
 
 
 async def _validation_error(request: Request, exc: RequestValidationError) -> Response:

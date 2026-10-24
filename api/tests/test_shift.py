@@ -189,7 +189,7 @@ async def test_version_is_checked_before_the_shift_rules(game):
     await bootstrap(game)
     assert (await command(game, 0, key(1), shift_cmd())).status_code == 200
     stale = await command(game, 0, key(2), shift_cmd(score=9))
-    assert assert_error(stale, 409, "version_conflict")["details"] == {"current_version": 1}
+    assert assert_error(stale, 409, "version_conflict")["details"] == {"current_version": 1, "version": 1}
     assert [e["key"] for e in (await factory_row(game))["state"]["meta"]["idempotency"]] == [key(1)]
 
 
@@ -369,7 +369,8 @@ def test_undo_redo_are_in_the_command_union():
 async def test_features_undo_follows_the_sim_flag_and_is_cached_for_60_s(game, fake_sim, monkeypatch):
     now = [1000.0]
     monkeypatch.setattr("app.sim_client.time", SimpleNamespace(monotonic=lambda: now[0], time=time.time))
-    assert (await bootstrap(game))["features"] == {"undo": False, "serverOrderEta": False}
+    feats = (await bootstrap(game))["features"]
+    assert feats["undo"] is False and feats["serverOrderEta"] is True
     fake_sim.history_in_state = True  # S1U deployed ...
     now[0] += 59
     assert (await bootstrap(game))["features"]["undo"] is False  # ... but the verdict is cached for 60 s

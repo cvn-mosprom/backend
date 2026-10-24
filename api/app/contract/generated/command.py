@@ -72,15 +72,6 @@ class OfflineSeenCommand(BaseModel):
     type: Literal['offlineSeen']
 
 
-class PackSimEvent(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    k: Literal['pack']
-    node: str
-    t: float
-
-
 class PaintCommand(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -166,27 +157,6 @@ class Side(RootModel[Literal['N', 'E', 'S', 'W']]):
     root: Literal['N', 'E', 'S', 'W']
 
 
-class SpawnSimEvent(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    item: Literal[
-        'preform',
-        'bottle_empty',
-        'bottle_filled',
-        'bottle_capped',
-        'bottle_labeled',
-        'box',
-        'pallet',
-        'can_empty',
-        'can_filled',
-        'can_sealed',
-    ]
-    k: Literal['spawn']
-    node: str
-    t: float
-
-
 class SubmitShiftCommand(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -228,16 +198,6 @@ class UpgradeConveyorCommand(BaseModel):
     type: Literal['upgradeConveyor']
 
 
-class WorkSimEvent(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    k: Literal['work']
-    node: str
-    sec: float
-    t: float
-
-
 class BuildingConfig(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -277,51 +237,6 @@ class ExpandHangarCommand(BaseModel):
     )
     side: Literal['N', 'E', 'S', 'W']
     type: Literal['expandHangar']
-
-
-class FillSimEvent(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    fluid: Literal[
-        'kvas',
-        'kvas_white',
-        'syrup_tarhun',
-        'syrup_duchess',
-        'syrup_cola',
-        'syrup_fancy',
-        'syrup_street',
-        'lemonade_tarhun',
-        'lemonade_duchess',
-        'cola',
-        'fancy',
-        'street',
-    ]
-    k: Literal['fill']
-    liters: float
-    node: str
-    t: float
-
-
-class InSimEvent(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    defect: float
-    k: Literal['in']
-    node: str
-    sku: Literal[
-        'kvas_ochakovsky_15',
-        'lemonade_tarhun_15',
-        'lemonade_duchess_15',
-        'kvas_semeyny_15',
-        'coolcola_05',
-        'fancy_05',
-        'street_05',
-        'kvas_ochakovsky_can',
-    ]
-    t: float
-    unit: Literal['box', 'pallet']
 
 
 class MoveCommand(BaseModel):
@@ -402,28 +317,6 @@ class PlaceConveyorCommand(BaseModel):
     type: Literal['placeConveyor']
 
 
-class RejectSimEvent(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    k: Literal['reject']
-    node: str
-    sku: (
-        Literal[
-            'kvas_ochakovsky_15',
-            'lemonade_tarhun_15',
-            'lemonade_duchess_15',
-            'kvas_semeyny_15',
-            'coolcola_05',
-            'fancy_05',
-            'street_05',
-            'kvas_ochakovsky_can',
-        ]
-        | None
-    ) = None
-    t: float
-
-
 class RerouteConveyorCommand(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -450,24 +343,6 @@ class SellMarketCommand(BaseModel):
         'kvas_ochakovsky_can',
     ]
     type: Literal['sellMarket']
-
-
-class TickCommand(BaseModel):
-    model_config = ConfigDict(
-        extra='forbid',
-    )
-    events: list[
-        SpawnSimEvent
-        | FillSimEvent
-        | PackSimEvent
-        | WorkSimEvent
-        | RejectSimEvent
-        | InSimEvent
-    ]
-    from_: Annotated[float, Field(alias='from')]
-    seed: float | None = None
-    to: float
-    type: Literal['tick']
 
 
 class Command(
@@ -499,7 +374,6 @@ class Command(
         | RedoCommand
         | BuildEndCommand
         | OfflineSeenCommand
-        | TickCommand
     ]
 ):
     root: Annotated[
@@ -529,7 +403,6 @@ class Command(
         | UndoCommand
         | RedoCommand
         | BuildEndCommand
-        | OfflineSeenCommand
-        | TickCommand,
+        | OfflineSeenCommand,
         Field(discriminator='type'),
     ]

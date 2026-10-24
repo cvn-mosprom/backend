@@ -3,8 +3,7 @@
 import assert from 'node:assert/strict';
 import { before, describe, it } from 'node:test';
 import { OFFLINE_CAP_H } from '$lib/content/balance';
-import { advance, catchUp, command, mergeOffline } from '../src/engine';
-import type { StateObject } from '../src/host';
+import { advance, catchUp, command, mergeOffline, type StateObject } from '../src/engine';
 import { H, T0, buildTutorialLine, newFactory } from './helpers';
 
 type Report = { hours: number; capped: boolean; producedBottles: number; producedBoxes: Record<string, number>; creditsSpent: number; broken: string[]; storageFull: boolean };

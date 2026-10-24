@@ -23,6 +23,8 @@
 		respond "not found" 404
 	}
 
+	# No method matcher on purpose: CORS preflights (OPTIONS /api/*) must reach the api, whose CORSMiddleware answers
+	# them (200 + Access-Control-*) before auth and the rate limiter. CORS headers on real responses come from the api too.
 	@api path /api/* /health /ready
 	handle @api {
 		request_body {

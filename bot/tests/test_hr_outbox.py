@@ -81,7 +81,7 @@ def test_payload_fallback_when_the_lead_row_is_gone():
                                        "quiz_score": 4, "source": "qr_1"})
         assert (await outbox.deliver_once(runtime.get())).sent == 1
         body = calls(bot)[0][1]
-        assert "Из &lt;payload&gt;" in body and "#senior" in body and "квиз: 4/10" in body and "qr_1" in body
+        assert "Из &lt;payload&gt;" in body and "#senior" in body and "квиз: 4/8" in body and "qr_1" in body
 
     run_db(go, bot=bot)
 

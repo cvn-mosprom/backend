@@ -245,7 +245,7 @@ class LeaderboardService:
             "skus": len(collection), "bestProfession": best, "bestProfessionReason": reason,
             # beyond the frontend type (spec: credits, stars, level, quiz result, lead status)
             "seasonId": f.season_id, "credits": f.credits, "stars": f.stars, "level": f.level,
-            "quizResult": quiz,  # {score, answered, total, completed} or null (S5)
+            "quizResult": quiz,  # {correct, total, score 0..100, answered, completed, bankTotal} (quiz.quiz_progress) or null
             "leadStatus": lead,  # status of the latest lead, 'revoked' after a consent revocation, or null (S5)
         }
 

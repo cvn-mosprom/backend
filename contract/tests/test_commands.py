@@ -11,7 +11,7 @@ import pytest
 from conftest import SCHEMA_DIR, TYPES_TS, all_command_examples, pascal
 from pydantic import ValidationError
 
-# Block 1 of the spec: 27 working commands + `tick` (still in the contract in S0; removed in S1).
+# Block 1 of the spec: 27 working commands. `tick` left the contract in frontend rev. 4 (the server is analytic).
 SPEC_COMMANDS = [
     "place", "placeConveyor", "rerouteConveyor", "remove", "move", "rotate", "configure", "upgrade",
     "upgradeConveyor", "repair", "expandHangar", "paint", "acceptOrder", "cancelOrder", "sellMarket",
@@ -32,14 +32,15 @@ def _ids(pairs):
 
 
 def test_command_types_match_spec_list(gen):
-    assert len(gen.COMMAND_TYPES) == 28
-    assert set(gen.COMMAND_TYPES) == set(SPEC_COMMANDS) | {"tick"}
-    assert len(set(gen.COMMAND_TYPES)) == 28
+    assert len(gen.COMMAND_TYPES) == 27
+    assert set(gen.COMMAND_TYPES) == set(SPEC_COMMANDS)
+    assert len(set(gen.COMMAND_TYPES)) == 27
+    assert "tick" not in gen.COMMAND_TYPES
 
 
 @pytest.mark.skipif(not TYPES_TS.exists(), reason="vendor/frontend submodule not checked out")
 def test_command_types_match_types_ts(gen):
-    """Independent cross-check (regex over the TS source, not the generator): same 28 discriminators."""
+    """Independent cross-check (regex over the TS source, not the generator): same 27 discriminators."""
     src = TYPES_TS.read_text(encoding="utf-8")
     block = src[src.index("export type Command =") : src.index("export type CommandResult")]
     from_ts = re.findall(r"\|\s*\{\s*type:\s*'(\w+)'", block)
@@ -72,6 +73,7 @@ def test_example_valid_against_json_schema(command_schema, ctype, example):
     "bad",
     [
         {"type": "tickk"},
+        {"type": "tick", "from": 1, "to": 2, "events": []},  # removed from the contract: 422 validation_error at the API
         {"type": "nope", "x": 1},
         {"type": ""},
         {"type": None},
@@ -147,17 +149,6 @@ def test_specific_bad_values_rejected(gen):
         gen.parse_command({"type": "sellMarket", "sku": "beer", "boxes": 1})
     with pytest.raises(ValidationError):
         gen.parse_command({"type": "placeConveyor", "kind": "belt", "path": [{"x": 1, "y": 1}]})
-
-
-def test_tick_alias_and_events(gen):
-    ok = {"type": "tick", "from": 1, "to": 2, "events": [{"t": 1, "k": "pack", "node": "b1"}]}
-    parsed = gen.parse_command(ok)
-    assert parsed.from_ == 1 and parsed.to == 2
-    # the python-side field name is not accepted on the wire
-    with pytest.raises(ValidationError):
-        gen.parse_command({"type": "tick", "from_": 1, "to": 2, "events": []})
-    with pytest.raises(ValidationError):
-        gen.parse_command({"type": "tick", "from": 1, "to": 2, "events": [{"t": 1, "k": "teleport"}]})
 
 
 def test_submit_shift_result_shape(gen):

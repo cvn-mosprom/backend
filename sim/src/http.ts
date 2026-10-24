@@ -3,8 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Command } from '$lib/api/types';
-import { COMMAND_TYPES, HISTORY_IN_STATE, advance, bootstrap, command, snapshot, type PlayerInfo } from './engine';
-import type { StateObject } from './host';
+import { COMMAND_TYPES, HISTORY_IN_STATE, STATE_VERSION, StateError, advance, bootstrap, command, snapshot, type PlayerInfo, type StateObject } from './engine';
 
 export const BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 
@@ -37,11 +36,14 @@ function needNow(b: Obj): number {
 	return now;
 }
 
-/** Structural guard for the parts of MockState whose absence would crash the mock (everything else is opaque). */
+/**
+ * Structural guard for the parts of the state whose absence would crash the core (everything else is opaque). Accepts the
+ * current schema and v1 (the pre-core MockGameApi shape: shifts inside `season`, no history), which `migrateState` upgrades.
+ */
 function needState(x: unknown): StateObject {
 	const s = needObj(x, 'state');
 	const fail = (what: string) => bad(`state is not a factory state: ${what}`);
-	if (s.v !== 1) throw fail('v must be 1');
+	if (!isNum(s.v) || !Number.isInteger(s.v) || s.v < 1 || s.v > STATE_VERSION) throw fail(`v must be 1..${STATE_VERSION}`);
 	const sim = s.sim;
 	if (!isObj(sim)) throw fail('sim');
 	const layout = sim.layout;
@@ -50,9 +52,11 @@ function needState(x: unknown): StateObject {
 	if (!Array.isArray(sim.orders)) throw fail('sim.orders');
 	for (const k of ['stock', 'shipped', 'collection', 'lastShipped'] as const) if (!isObj(sim[k])) throw fail(`sim.${k}`);
 	if (!isObj(s.player)) throw fail('player');
-	if (!isNum(s.lastTick) || !isNum(s.lastSeenReal) || !isNum(s.level)) throw fail('lastTick/lastSeenReal/level');
+	if (!isNum(s.lastTick) || !isNum(s.level)) throw fail('lastTick/level');
 	const season = s.season;
-	if (!isObj(season) || !isNum(season.startsAt) || !isNum(season.endsAt) || !isNum(season.shiftsLeft)) throw fail('season');
+	if (!isObj(season) || !isNum(season.startsAt) || !isNum(season.endsAt)) throw fail('season');
+	if (s.v >= 2 && (!isNum(s.shiftsLeft) || typeof s.shiftsDay !== 'string')) throw fail('shiftsLeft/shiftsDay');
+	if (s.v < 2 && !isNum(season.shiftsLeft)) throw fail('season.shiftsLeft');
 	if (!isObj(s.skills) || !isObj(s.skills.byProfession)) throw fail('skills');
 	const d = s.dialogs;
 	if (!isObj(d) || !Array.isArray(d.done) || !Array.isArray(d.factsSeen)) throw fail('dialogs');
@@ -65,6 +69,10 @@ function needPlayer(x: unknown): PlayerInfo {
 	if (typeof id !== 'string' || id.length === 0 || id.length > 128) throw bad('player.id must be a non-empty string');
 	if (typeof p.name !== 'string' || p.name.length === 0 || p.name.length > 256) throw bad('player.name must be a non-empty string');
 	const out: PlayerInfo = { id, name: p.name };
+	if (p.source !== undefined && p.source !== null) {
+		if (typeof p.source !== 'string' || p.source.length > 256) throw bad('player.source must be a string');
+		out.source = p.source;
+	}
 	if (p.tgId !== undefined && p.tgId !== null) {
 		if (!isNum(p.tgId) || !Number.isInteger(p.tgId)) throw bad('player.tgId must be an integer');
 		out.tgId = p.tgId;
@@ -176,7 +184,7 @@ export function createRequestHandler(opts: HandlerOptions) {
 		try {
 			if (path === '/health') {
 				if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'method_not_allowed', 'use GET');
-				return send(res, 200, { status: 'ok', service: 'sim', simCommit: opts.simCommit, historyInState: HISTORY_IN_STATE }, requestId);
+				return send(res, 200, { status: 'ok', service: 'sim', simCommit: opts.simCommit, historyInState: HISTORY_IN_STATE, stateV: STATE_VERSION }, requestId);
 			}
 			const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
 			if (!route) throw new HttpError(404, 'not_found', `no such endpoint: ${path}`);
@@ -192,6 +200,7 @@ export function createRequestHandler(opts: HandlerOptions) {
 			if (!isObj(body)) throw bad('body must be a JSON object');
 			send(res, 200, await route(body), requestId);
 		} catch (e) {
+			if (e instanceof StateError) e = bad(`state is not a factory state: ${e.message}`);
 			if (e instanceof HttpError) {
 				status = e.status;
 				send(res, e.status, errorBody(e.code, e.message), requestId);

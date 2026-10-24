@@ -22,7 +22,7 @@ async def test_two_concurrent_commands_with_the_same_version_exactly_one_wins(ga
     loser = a if a.status_code == 409 else b
     winner = b if loser is a else a
     assert winner.json()["version"] == 1 and winner.json()["replayed"] is False
-    assert assert_error(loser, 409, "version_conflict")["details"] == {"current_version": 1}
+    assert assert_error(loser, 409, "version_conflict")["details"] == {"current_version": 1, "version": 1}
     row = await factory_row(game)
     assert row["version"] == 1 and row["credits"] == START_CREDITS - PLACE_COST  # applied exactly once
     assert len(row["state"]["buildings"]) == 1

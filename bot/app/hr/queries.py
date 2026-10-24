@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .format import MSK, PROFESSIONS, STATUS_ALIASES, STATUSES, TAGS, age_years
+from .format import INSTITUTION_KINDS, MSK, PROFESSIONS, QUIZ_QUESTION_IDS, STATUS_ALIASES, STATUSES, TAGS, age_years
 
 # Funnel steps = the subset of api/app/events.py EVENT_NAMES that marks progress (a test keeps them in sync).
 FUNNEL_STEPS: tuple[tuple[str, str], ...] = (
@@ -31,7 +31,7 @@ FUNNEL_STEPS: tuple[tuple[str, str], ...] = (
 )
 
 LEAD_COLS = """l.id, l.user_id, l.season_id, l.full_name, l.birth_date, l.phone, l.email, l.telegram, l.university,
-    l.direction, l.course, l.vacancy, l.ready_from, l.readiness, l.practice_type, l.tags, l.status, l.hr_note,
+    l.institution_kind, l.direction, l.course, l.vacancy, l.ready_from, l.readiness, l.practice_type, l.tags, l.status, l.hr_note,
     l.best_profession, l.season_place, l.quiz_score, l.consent_revoked_at, l.created_at, l.updated_at,
     u.tg_id, u.username AS tg_username, u.source"""
 LEAD_FROM = "FROM leads l JOIN users u ON u.id = l.user_id"
@@ -153,10 +153,11 @@ async def set_lead_status(s: AsyncSession, lead_id: int, status: str, actor: str
 CSV_COLUMNS = (
     ("id", "id"), ("created_at", "создана (МСК)"), ("status", "статус"), ("full_name", "ФИО"),
     ("birth_date", "дата рождения"), ("age", "возраст"), ("phone", "телефон"), ("email", "email"),
-    ("telegram", "telegram"), ("university", "вуз"), ("direction", "направление"), ("course", "курс"),
+    ("telegram", "telegram"), ("university", "вуз"), ("institution_kind", "вид учреждения"),
+    ("direction", "направление"), ("course", "курс"),
     ("vacancy", "вакансия"), ("readiness", "готовность"), ("ready_from", "готов с"), ("practice_type", "тип практики"),
     ("tags", "теги"), ("best_profession", "лучшая профессия"), ("season_place", "место в сезоне"),
-    ("quiz_score", "квиз (верных из 10)"), ("source", "источник"), ("season_id", "сезон"), ("hr_note", "заметки HR"),
+    ("quiz_score", "квиз (верных из 8)"), ("source", "источник"), ("season_id", "сезон"), ("hr_note", "заметки HR"),
 )
 _PHONE_RE = re.compile(r"^\+?\d[\d ()-]*$")
 
@@ -184,6 +185,8 @@ def _cell(key: str, row: dict[str, Any], today: date) -> str:
         return ",".join(v)
     if key in ("vacancy", "best_profession"):
         return csv_safe(PROFESSIONS.get(v, v))
+    if key == "institution_kind":
+        return csv_safe(INSTITUTION_KINDS.get(v, v))
     return csv_safe(str(v))
 
 
@@ -245,7 +248,8 @@ def _today_start(now: datetime | None = None) -> datetime:
     return n.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
 
-async def stats(s: AsyncSession, quiz_total: int, now: datetime | None = None) -> dict[str, Any]:
+async def stats(s: AsyncSession, quiz_total: int, now: datetime | None = None,
+                quiz_ids: tuple[str, ...] = QUIZ_QUESTION_IDS) -> dict[str, Any]:
     since = _today_start(now)
     row = (await s.execute(text("""
         SELECT
@@ -254,14 +258,16 @@ async def stats(s: AsyncSession, quiz_total: int, now: datetime | None = None) -
           (SELECT count(*) FROM users WHERE is_bot = false AND last_seen_at >= :since) AS dau,
           (SELECT count(*) FROM factories f JOIN users u ON u.id = f.user_id WHERE u.is_bot = false) AS factories,
           (SELECT count(*) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE u.is_bot = false AND sh.created_at >= :since) AS shifts_today,
-          (SELECT count(DISTINCT qa.user_id) FROM quiz_answers qa JOIN users u ON u.id = qa.user_id WHERE u.is_bot = false) AS quiz_started
-        """), {"since": since})).mappings().one()
+          (SELECT count(DISTINCT qa.user_id) FROM quiz_answers qa JOIN users u ON u.id = qa.user_id
+             WHERE u.is_bot = false AND qa.question_id = ANY(CAST(:ids AS text[]))) AS quiz_started
+        """), {"since": since, "ids": list(quiz_ids)})).mappings().one()
     out = dict(row)
     quiz = (await s.execute(text("""
         SELECT count(*) AS completed, coalesce(avg(sc), 0) AS avg_score FROM (
           SELECT qa.user_id, count(*) FILTER (WHERE qa.correct) AS sc, count(*) AS n
-          FROM quiz_answers qa JOIN users u ON u.id = qa.user_id WHERE u.is_bot = false GROUP BY qa.user_id) t
-        WHERE n >= :total"""), {"total": quiz_total})).mappings().one()
+          FROM quiz_answers qa JOIN users u ON u.id = qa.user_id
+          WHERE u.is_bot = false AND qa.question_id = ANY(CAST(:ids AS text[])) GROUP BY qa.user_id) t
+        WHERE n >= :total"""), {"total": quiz_total, "ids": list(quiz_ids)})).mappings().one()
     out["quiz_completed"], out["quiz_avg"] = int(quiz["completed"]), float(quiz["avg_score"])
     st = (await s.execute(text(
         "SELECT l.status, count(*) AS n FROM leads l JOIN users u ON u.id = l.user_id "

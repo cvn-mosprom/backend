@@ -34,8 +34,8 @@ describe('GET /health', () => {
 	it('reports ok, service, the sim commit and whether the undo history lives in the state', async () => {
 		const res = await fetch(base + '/health');
 		assert.equal(res.status, 200);
-		// historyInState: false until S1U removes undo/redo from engine.ts REJECTED_COMMANDS (the API's features.undo follows it)
-		assert.deepEqual(await res.json(), { status: 'ok', service: 'sim', simCommit: 'abc1234', historyInState: false });
+		// historyInState: undo/redo live in state.history (features.undo of the API follows it)
+		assert.deepEqual(await res.json(), { status: 'ok', service: 'sim', simCommit: 'abc1234', historyInState: true, stateV: 2 });
 		assert.ok(res.headers.get('x-request-id'));
 	});
 	it('echoes X-Request-ID', async () => {
@@ -102,17 +102,28 @@ describe('POST /v1/command', () => {
 			state = s.json.state;
 		}
 	});
-	it('tick is rejected with tick_removed', async () => {
+	it('tick is gone from the contract: the sim answers 400 unknown command type', async () => {
 		const { json: b } = await post('/v1/bootstrap', bootstrapBody());
 		const r = await post('/v1/command', { state: b.state, now: T0 + 1000, cmd: { type: 'tick', from: T0, to: T0 + 500, events: [] } });
-		assert.equal(r.status, 200);
-		assert.deepEqual(r.json.result, { ok: false, error: 'tick_removed', code: 'tick_removed' });
-		assert.deepEqual(r.json.state, b.state);
+		assert.equal(r.status, 400);
+		assert.equal(r.json.error.code, 'bad_request');
+	});
+	it('undo / redo over HTTP: the history is in the state and survives a JSON re-request', async () => {
+		const { json: b } = await post('/v1/bootstrap', bootstrapBody());
+		const place = await post('/v1/command', { state: b.state, now: T0 + 1000, cmd: tutorialCommands()[0] });
+		assert.equal(place.json.result.ok, true);
+		assert.equal(place.json.snapshot.undoSteps, 1);
+		const undo = await post('/v1/command', { state: place.json.state, now: T0 + 2000, cmd: { type: 'undo' } });
+		assert.equal(undo.json.result.ok, true, undo.json.result.error);
+		assert.equal(undo.json.snapshot.factory.layout.buildings.length, 0);
+		const redo = await post('/v1/command', { state: undo.json.state, now: T0 + 3000, cmd: { type: 'redo' } });
+		assert.equal(redo.json.result.ok, true, redo.json.result.error);
+		assert.equal(redo.json.snapshot.factory.layout.buildings.length, 1);
 	});
 	it('meta survives every kind of command outcome', async () => {
 		const { json: b } = await post('/v1/bootstrap', bootstrapBody());
 		const state = { ...b.state, ...structuredClone(EXTRAS) };
-		for (const cmd of [{ type: 'ageConfirm' }, { type: 'renameFactory', name: '?' }, { type: 'tick', from: 0, to: 1, events: [] }, { type: 'buildEnd' }]) {
+		for (const cmd of [{ type: 'ageConfirm' }, { type: 'renameFactory', name: '?' }, { type: 'undo' }, { type: 'buildEnd' }]) {
 			const r = await post('/v1/command', { state, now: T0 + 2000, cmd });
 			assert.equal(r.status, 200);
 			assert.deepEqual(pickExtras(r.json.state), EXTRAS, JSON.stringify(cmd));
@@ -238,7 +249,8 @@ describe('errors', () => {
 	});
 	it('a body that is not a factory state -> 400', async () => {
 		expect400(await post('/v1/snapshot', { state: {}, now: T0 }), 'empty state');
-		expect400(await post('/v1/snapshot', { state: { ...state, v: 2 }, now: T0 }), 'wrong version');
+		expect400(await post('/v1/snapshot', { state: { ...state, v: 3 }, now: T0 }), 'newer than the core');
+		expect400(await post('/v1/snapshot', { state: { ...state, v: 0 }, now: T0 }), 'wrong version');
 		expect400(await post('/v1/snapshot', { state: { ...state, sim: null }, now: T0 }), 'no sim');
 		expect400(await post('/v1/snapshot', { state: { ...state, sim: { ...state.sim, layout: {} } }, now: T0 }), 'no layout');
 		expect400(await post('/v1/snapshot', { state: { ...state, season: undefined }, now: T0 }), 'no season');
@@ -257,7 +269,7 @@ describe('errors', () => {
 		assert.equal(r.status, 413);
 		assert.equal(r.json.error.code, 'payload_too_large');
 	});
-	it('an exception inside the mock -> 500 internal_error, and the server keeps serving', async () => {
+	it('an exception inside the core -> 500 internal_error, and the server keeps serving', async () => {
 		errors.length = 0;
 		const r = await post('/v1/command', { state, now: T0 + 1000, cmd: { type: 'place' } }); // schema-invalid: no kind
 		assert.equal(r.status, 500);

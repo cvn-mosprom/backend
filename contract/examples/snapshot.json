@@ -1,4 +1,5 @@
 {
+  "version": 7,
   "serverTime": 1761253200000,
   "undoSteps": 3,
   "redoSteps": 1,
@@ -98,6 +99,7 @@
       "rewardStars": 2,
       "rewardXp": 40,
       "deadline": 1761339600000,
+      "etaAt": 1761256800000,
       "status": "accepted",
       "loaded": 5,
       "dockId": "b3",

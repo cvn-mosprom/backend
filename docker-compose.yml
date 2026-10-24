@@ -95,6 +95,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       SIM_URL: http://sim:8080
       INTERNAL_TOKEN: *internal-token
+      # CORS of the web client (empty: dev -> http://localhost:5173, prod -> origin of WEBAPP_URL, else https://DOMAIN)
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      WEBAPP_URL: ${WEBAPP_URL:-}
+      DOMAIN: ${DOMAIN:-localhost}
       # uvicorn worker processes (WEB_CONCURRENCY). Keep <= 4: each worker holds a DB pool of DB_POOL_SIZE+DB_MAX_OVERFLOW
       # (5+5), so 4 workers = 40 of Postgres' 100 connections. The sim is the CPU hog, not the API.
       WEB_CONCURRENCY: ${API_WORKERS:-2}

@@ -28,10 +28,10 @@ def test_schema_files_are_lf_and_sorted(name):
     assert json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n" == raw.decode("utf-8")
 
 
-def test_command_schema_is_discriminated_union_of_28(command_schema):
+def test_command_schema_is_discriminated_union_of_27(command_schema):
     cmd = command_schema["definitions"]["Command"]
     assert cmd["discriminator"]["propertyName"] == "type"
-    assert len(cmd["oneOf"]) == 28 == len(cmd["discriminator"]["mapping"])
+    assert len(cmd["oneOf"]) == 27 == len(cmd["discriminator"]["mapping"])
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh not available")

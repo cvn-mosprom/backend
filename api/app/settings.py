@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,6 +21,17 @@ def normalize_db_url(url: str) -> str:
 INTERNAL_TOKEN_PLACEHOLDERS = frozenset({"dev-internal-token", "change-me", "changeme", "change-me-internal-token"})
 
 
+DEV_CORS_ORIGIN = "http://localhost:5173"  # vite dev server of the web client
+
+
+def origin_of(url: str) -> str | None:
+    """`https://host:port/path?q` -> `https://host:port` (what a browser sends in `Origin`); None when not a URL."""
+    parts = urlsplit(url.strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}".lower()
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
@@ -34,6 +46,11 @@ class Settings(BaseSettings):
     pgbouncer: bool = False
     domain: str = ""
     log_level: str = "INFO"
+
+    # S8 CORS. CORS_ORIGINS = comma-separated allowed origins ("*" = any). Empty: dev -> http://localhost:5173 (vite),
+    # prod -> the origin of WEBAPP_URL (the Mini App web build), else https://$DOMAIN.
+    cors_origins: str = ""
+    webapp_url: str = ""
 
     # DB pool is per worker process; 2 workers x (5 + 5) stays within "10-20 connections per API".
     db_pool_size: int = 5
@@ -76,6 +93,20 @@ class Settings(BaseSettings):
     @property
     def is_prod(self) -> bool:
         return self.app_env == "prod"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Origins for CORSMiddleware (no trailing slashes, no paths)."""
+        explicit = [o.strip().rstrip("/") for o in self.cors_origins.split(",") if o.strip()]
+        if explicit:
+            return explicit
+        if not self.is_prod:
+            return [DEV_CORS_ORIGIN]
+        domain = self.domain.strip()
+        for raw in (self.webapp_url, domain if "://" in domain else f"https://{domain}" if domain else ""):
+            if (origin := origin_of(raw)) is not None:
+                return [origin]
+        return []
 
     @property
     def dev_auth_enabled(self) -> bool:

@@ -27,7 +27,11 @@ PROFESSIONS = {  # content ProfessionId -> title (vendor/frontend professions.ts
 }
 READINESS = {"now": "готов выйти сразу", "season": "готов к сезону", "later": "позже"}
 PRACTICE = {"paid": "оплачиваемая практика", "free": "неоплачиваемая практика", "job": "работа"}
-QUIZ_TOTAL = 10  # api/app/quiz_bank.py TOTAL
+INSTITUTION_KINDS = {"vuz": "вуз", "college": "колледж"}  # leads.institution_kind
+# The quiz bank of api/app/data/quiz_bank.json (= the frontend's): the bot has no api import, a test in api/tests keeps
+# these two in sync. Answers to other ids (the S5 bank, q1978...) are not counted.
+QUIZ_TOTAL = 8
+QUIZ_QUESTION_IDS = ("q_year", "q_olymp", "q_kvas", "q_izba", "q_white", "q_cities", "q_fields", "q_space")
 
 LEAD_PREFIX = "ls"  # callback_data: ls:<lead_id>:<status>
 
@@ -73,7 +77,7 @@ def card_from_payload(p: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": p.get("lead_id"), "full_name": p.get("full_name") or "-", "birth_date": None, "phone": p.get("phone"),
         "email": p.get("email"), "telegram": p.get("telegram"), "university": p.get("university") or "-",
-        "direction": p.get("direction"), "course": p.get("course"), "vacancy": p.get("vacancy"), "ready_from": None,
+        "institution_kind": p.get("institution_kind"), "direction": p.get("direction"), "course": p.get("course"), "vacancy": p.get("vacancy"), "ready_from": None,
         "readiness": p.get("readiness"), "practice_type": p.get("practice_type"), "tags": list(p.get("tags") or []),
         "status": "new", "hr_note": None, "best_profession": p.get("best_profession"),
         "season_place": p.get("season_place"), "quiz_score": p.get("quiz_score"), "consent_revoked_at": None,
@@ -102,11 +106,13 @@ def render_card(c: Mapping[str, Any], *, new: bool = False, today: date | None =
     if c.get("telegram"):
         lines.append(f"✈️ @{esc(str(c['telegram']).lstrip('@'))}")
     study = [esc(c.get("university") or "-")]
-    if c.get("direction"):
-        study.append(esc(c["direction"]))
+    if c.get("institution_kind"):
+        study.append(esc(INSTITUTION_KINDS.get(c["institution_kind"], c["institution_kind"])))
     if c.get("course"):
         study.append(f"курс: {esc(c['course'])}")
     lines.append("🎓 " + " · ".join(study))
+    if c.get("direction"):  # the form's `department` (stored as its label) or the free text of an older form
+        lines.append(f"🧭 Направление: {esc(c['direction'])}")
     if c.get("vacancy"):
         lines.append(f"💼 Вакансия: {esc(PROFESSIONS.get(c['vacancy'], c['vacancy']))}")
     ready = READINESS.get(c.get("readiness") or "", c.get("readiness"))

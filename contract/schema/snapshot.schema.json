@@ -71,6 +71,9 @@
     "CommandResultFailed": {
       "additionalProperties": false,
       "properties": {
+        "code": {
+          "type": "string"
+        },
         "error": {
           "type": "string"
         },
@@ -93,6 +96,9 @@
       "properties": {
         "ok": {
           "const": true,
+          "type": "boolean"
+        },
+        "replayed": {
           "type": "boolean"
         },
         "rewards": {
@@ -121,6 +127,9 @@
         },
         "toast": {
           "type": "string"
+        },
+        "version": {
+          "type": "number"
         }
       },
       "required": [
@@ -671,6 +680,9 @@
         },
         "undoSteps": {
           "type": "number"
+        },
+        "version": {
+          "type": "number"
         }
       },
       "required": [
@@ -946,6 +958,9 @@
         },
         "dockId": {
           "type": "string"
+        },
+        "etaAt": {
+          "type": "number"
         },
         "hours": {
           "type": "number"

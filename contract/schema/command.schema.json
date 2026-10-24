@@ -149,7 +149,6 @@
           "setUniversity": "#/definitions/SetUniversityCommand",
           "submitShift": "#/definitions/SubmitShiftCommand",
           "takeLoan": "#/definitions/TakeLoanCommand",
-          "tick": "#/definitions/TickCommand",
           "undo": "#/definitions/UndoCommand",
           "upgrade": "#/definitions/UpgradeCommand",
           "upgradeConveyor": "#/definitions/UpgradeConveyorCommand"
@@ -237,9 +236,6 @@
         },
         {
           "$ref": "#/definitions/OfflineSeenCommand"
-        },
-        {
-          "$ref": "#/definitions/TickCommand"
         }
       ]
     },
@@ -330,35 +326,6 @@
       ],
       "type": "object"
     },
-    "FillSimEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "fluid": {
-          "$ref": "#/definitions/FluidKind"
-        },
-        "k": {
-          "const": "fill",
-          "type": "string"
-        },
-        "liters": {
-          "type": "number"
-        },
-        "node": {
-          "type": "string"
-        },
-        "t": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "t",
-        "k",
-        "node",
-        "fluid",
-        "liters"
-      ],
-      "type": "object"
-    },
     "FluidKind": {
       "enum": [
         "kvas",
@@ -373,58 +340,6 @@
         "cola",
         "fancy",
         "street"
-      ],
-      "type": "string"
-    },
-    "InSimEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "defect": {
-          "type": "number"
-        },
-        "k": {
-          "const": "in",
-          "type": "string"
-        },
-        "node": {
-          "type": "string"
-        },
-        "sku": {
-          "$ref": "#/definitions/SkuId"
-        },
-        "t": {
-          "type": "number"
-        },
-        "unit": {
-          "enum": [
-            "box",
-            "pallet"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "t",
-        "k",
-        "node",
-        "sku",
-        "unit",
-        "defect"
-      ],
-      "type": "object"
-    },
-    "ItemKind": {
-      "enum": [
-        "preform",
-        "bottle_empty",
-        "bottle_filled",
-        "bottle_capped",
-        "bottle_labeled",
-        "box",
-        "pallet",
-        "can_empty",
-        "can_filled",
-        "can_sealed"
       ],
       "type": "string"
     },
@@ -475,27 +390,6 @@
       },
       "required": [
         "type"
-      ],
-      "type": "object"
-    },
-    "PackSimEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "k": {
-          "const": "pack",
-          "type": "string"
-        },
-        "node": {
-          "type": "string"
-        },
-        "t": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "t",
-        "k",
-        "node"
       ],
       "type": "object"
     },
@@ -666,30 +560,6 @@
       },
       "required": [
         "type"
-      ],
-      "type": "object"
-    },
-    "RejectSimEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "k": {
-          "const": "reject",
-          "type": "string"
-        },
-        "node": {
-          "type": "string"
-        },
-        "sku": {
-          "$ref": "#/definitions/SkuId"
-        },
-        "t": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "t",
-        "k",
-        "node"
       ],
       "type": "object"
     },
@@ -933,39 +803,6 @@
       ],
       "type": "string"
     },
-    "SimEvent": {
-      "discriminator": {
-        "mapping": {
-          "fill": "#/definitions/FillSimEvent",
-          "in": "#/definitions/InSimEvent",
-          "pack": "#/definitions/PackSimEvent",
-          "reject": "#/definitions/RejectSimEvent",
-          "spawn": "#/definitions/SpawnSimEvent",
-          "work": "#/definitions/WorkSimEvent"
-        },
-        "propertyName": "k"
-      },
-      "oneOf": [
-        {
-          "$ref": "#/definitions/SpawnSimEvent"
-        },
-        {
-          "$ref": "#/definitions/FillSimEvent"
-        },
-        {
-          "$ref": "#/definitions/PackSimEvent"
-        },
-        {
-          "$ref": "#/definitions/WorkSimEvent"
-        },
-        {
-          "$ref": "#/definitions/RejectSimEvent"
-        },
-        {
-          "$ref": "#/definitions/InSimEvent"
-        }
-      ]
-    },
     "SkuId": {
       "enum": [
         "kvas_ochakovsky_15",
@@ -978,31 +815,6 @@
         "kvas_ochakovsky_can"
       ],
       "type": "string"
-    },
-    "SpawnSimEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "item": {
-          "$ref": "#/definitions/ItemKind"
-        },
-        "k": {
-          "const": "spawn",
-          "type": "string"
-        },
-        "node": {
-          "type": "string"
-        },
-        "t": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "t",
-        "k",
-        "node",
-        "item"
-      ],
-      "type": "object"
     },
     "SubmitShiftCommand": {
       "additionalProperties": false,
@@ -1039,37 +851,6 @@
       "required": [
         "type",
         "amount"
-      ],
-      "type": "object"
-    },
-    "TickCommand": {
-      "additionalProperties": false,
-      "properties": {
-        "events": {
-          "items": {
-            "$ref": "#/definitions/SimEvent"
-          },
-          "type": "array"
-        },
-        "from": {
-          "type": "number"
-        },
-        "seed": {
-          "type": "number"
-        },
-        "to": {
-          "type": "number"
-        },
-        "type": {
-          "const": "tick",
-          "type": "string"
-        }
-      },
-      "required": [
-        "type",
-        "from",
-        "to",
-        "events"
       ],
       "type": "object"
     },
@@ -1123,31 +904,6 @@
       "required": [
         "type",
         "cells"
-      ],
-      "type": "object"
-    },
-    "WorkSimEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "k": {
-          "const": "work",
-          "type": "string"
-        },
-        "node": {
-          "type": "string"
-        },
-        "sec": {
-          "type": "number"
-        },
-        "t": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "t",
-        "k",
-        "node",
-        "sec"
       ],
       "type": "object"
     }

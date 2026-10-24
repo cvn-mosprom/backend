@@ -13,7 +13,8 @@ from tests.helpers import dev
 def assert_error(resp, status: int, code: str) -> dict:
     assert resp.status_code == status, resp.text
     body = resp.json()
-    assert set(body) == {"error"}
+    # S8: a rejected command (422) also carries the fresh `snapshot` next to `error` (the web client applies it)
+    assert set(body) == {"error"} or (status == 422 and set(body) == {"error", "snapshot"})
     assert set(body["error"]) == {"code", "message", "details"}
     assert body["error"]["code"] == code
     assert isinstance(body["error"]["message"], str) and body["error"]["message"]
@@ -73,7 +74,8 @@ async def test_app_error_status_by_code(make_client, code, status):
     c = await make_client()
     resp = await c.get(f"/t/apperror/{code}")
     err = assert_error(resp, status, code)
-    assert err["message"] == "raised in test" and err["details"] == {"x": 1}
+    assert err["message"] == "raised in test"
+    assert err["details"] == ({"x": 1, "retry_after": 1} if status == 429 else {"x": 1})  # 429 mirrors Retry-After
     assert status_for(code) == status
 
 

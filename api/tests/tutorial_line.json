@@ -1,0 +1,155 @@
+[
+ {
+  "type": "place",
+  "kind": "brew_tank",
+  "x": 6,
+  "y": 1,
+  "rot": 1
+ },
+ {
+  "type": "placeConveyor",
+  "kind": "pipe",
+  "path": [
+   {
+    "x": 6,
+    "y": 3,
+    "dir": "S"
+   }
+  ]
+ },
+ {
+  "type": "place",
+  "kind": "intake",
+  "x": 0,
+  "y": 5,
+  "rot": 0
+ },
+ {
+  "type": "placeConveyor",
+  "kind": "belt",
+  "path": [
+   {
+    "x": 2,
+    "y": 5,
+    "dir": "E"
+   }
+  ]
+ },
+ {
+  "type": "place",
+  "kind": "blow",
+  "x": 3,
+  "y": 4,
+  "rot": 0
+ },
+ {
+  "type": "placeConveyor",
+  "kind": "belt",
+  "path": [
+   {
+    "x": 5,
+    "y": 5,
+    "dir": "E"
+   }
+  ]
+ },
+ {
+  "type": "place",
+  "kind": "filler",
+  "x": 6,
+  "y": 4,
+  "rot": 0
+ },
+ {
+  "type": "placeConveyor",
+  "kind": "belt",
+  "path": [
+   {
+    "x": 8,
+    "y": 5,
+    "dir": "E"
+   }
+  ]
+ },
+ {
+  "type": "place",
+  "kind": "capper",
+  "x": 9,
+  "y": 5,
+  "rot": 0
+ },
+ {
+  "type": "placeConveyor",
+  "kind": "belt",
+  "path": [
+   {
+    "x": 11,
+    "y": 5,
+    "dir": "E"
+   }
+  ]
+ },
+ {
+  "type": "place",
+  "kind": "labeler",
+  "x": 12,
+  "y": 5,
+  "rot": 0
+ },
+ {
+  "type": "placeConveyor",
+  "kind": "belt",
+  "path": [
+   {
+    "x": 14,
+    "y": 5,
+    "dir": "E"
+   },
+   {
+    "x": 15,
+    "y": 5,
+    "dir": "E"
+   },
+   {
+    "x": 16,
+    "y": 5,
+    "dir": "E"
+   }
+  ]
+ },
+ {
+  "type": "place",
+  "kind": "packer",
+  "x": 17,
+  "y": 4,
+  "rot": 0
+ },
+ {
+  "type": "placeConveyor",
+  "kind": "belt",
+  "path": [
+   {
+    "x": 19,
+    "y": 5,
+    "dir": "E"
+   },
+   {
+    "x": 20,
+    "y": 5,
+    "dir": "E"
+   },
+   {
+    "x": 21,
+    "y": 5,
+    "dir": "E"
+   }
+  ]
+ },
+ {
+  "type": "place",
+  "kind": "dock",
+  "x": 22,
+  "y": 5,
+  "rot": 0
+ }
+]

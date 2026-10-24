@@ -4,10 +4,13 @@ Independent of the sim: only Postgres is touched (the factory snapshot columns a
 Personal data (name, birth date, contacts) is never logged: the access log carries no bodies or queries and the
 engine hides SQL parameters in error messages (app/db.py `hide_parameters`).
 
-Wire format: request fields are camelCase or snake_case (fullName / full_name ...). The legacy frontend form
-(fullName, contact, university, course, roleId, consent) is accepted: `contact` is mapped to phone / email / telegram by
-its format, `roleId` is the vacancy. Everything beyond that (birthDate, phone, email, telegram, direction, vacancy,
-readyFrom, readiness, practiceType, consentTextVersion) is the case form proper.
+Wire format: request fields are camelCase or snake_case (fullName / full_name ...). Two client shapes are accepted:
+- the client's LeadForm (vendor/frontend docs/http-contract.md, S9): fullName, birthDate, phone?, email?, tgUsername?,
+  university, institutionKind? (vuz|college), course, department (id: lab|bottling|tech|warehouse|engineering|other),
+  roleId (= the vacancy), readyFrom?, practiceType, consent, consentVersion;
+- the older names: telegram, direction (free text), vacancy, readiness, consentTextVersion, and the legacy single
+  `contact` field (mapped to phone / email / telegram by its format).
+`department` is stored as its human label in `direction` and gives the `profile_direction` tag by id (`other` gives none).
 """
 from __future__ import annotations
 
@@ -35,8 +38,9 @@ MIN_AGE = 18
 VACANCIES = ("kvasovar", "operator", "adjuster", "lab", "storekeeper", "forklift", "kipia")  # content ProfessionId
 READY_WINDOW_DAYS = 120  # `readyFrom` within this many days counts as "ready for the season"
 SENIOR_COURSE = 4
+INSTITUTION_KINDS = ("vuz", "college")
 
-TAG_SENIOR = "senior"  # 4th course and above, or a graduate
+TAG_SENIOR = "senior"  # 4th course and above, a graduate, or a college student
 TAG_PROFILE = "profile_direction"  # direction relevant for a beverage plant
 TAG_READY = "ready_for_season"
 TAG_QUIZ = "high_quiz"
@@ -52,6 +56,18 @@ PROFILE_DIRECTIONS: dict[str, tuple[str, ...]] = {
     "logistics": ("логист", "складск", "снабжен"),
     "quality": ("качеств", "метролог", "стандартиз", "сертифик", "товаровед", "лаборатор"),
 }
+
+# `department` ids of the client form (vendor/frontend web/src/lib/ui/lead.ts DEPARTMENTS, drift test in
+# tests/test_quiz_bank_drift.py): id -> (label stored in `leads.direction`, PROFILE_DIRECTIONS key or None = no tag).
+DEPARTMENTS: dict[str, tuple[str, str | None]] = {
+    "lab": ("Лаборатория", "quality"),
+    "bottling": ("Розлив", "food_tech"),
+    "tech": ("Техника и наладка", "mechanics"),
+    "warehouse": ("Склад и логистика", "logistics"),
+    "engineering": ("Инженерия", "automation"),
+    "other": ("Другое", None),
+}
+assert all(d is None or d in PROFILE_DIRECTIONS for _, d in DEPARTMENTS.values())
 
 
 def _no_nul(v: str) -> str:
@@ -74,9 +90,12 @@ class LeadIn(CamelModel):
     phone: S40 | None = None
     email: S120 | None = None
     telegram: S80 | None = None
+    tg_username: S80 | None = None  # client name of `telegram`
     contact: S120 | None = None  # legacy single field: classified by format
     university: _str(200, 1)
-    direction: S120 | None = None
+    institution_kind: S32 | None = None  # vuz | college
+    direction: S120 | None = None  # free text
+    department: S32 | None = None  # client id, see DEPARTMENTS; wins over `direction`
     course: int | S40 | None = None
     vacancy: S64 | None = None  # profession id
     role_id: S64 | None = None  # legacy name of `vacancy`
@@ -85,12 +104,13 @@ class LeadIn(CamelModel):
     practice_type: Literal["paid", "free", "job"] | None = None
     consent: StrictBool | None = None  # anything but true -> 403 consent_required
     consent_text_version: S64 | None = None
+    consent_version: S64 | None = None  # client name of `consent_text_version`
 
 
 # ---------------------------------------------------------------- parsing helpers (pure)
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s.]{2,}$")
-_TG = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+_TG = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 _PHONE_CHARS = re.compile(r"^\+?[\d\s\-().]{10,25}$")
 _TG_PREFIXES = ("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/", "telegram.me/")
 
@@ -100,7 +120,7 @@ def normalize_email(s: str) -> str | None:
 
 
 def normalize_telegram(s: str) -> str | None:
-    """Bare username (no '@', no t.me link), 5..32 chars like Telegram's own rule."""
+    """Bare username (no '@', no t.me link), 4..32 chars (Telegram: 5..32, Fragment sells 4-char names; the contract example is "ivan")."""
     s = s.strip()
     for p in _TG_PREFIXES:
         if s.lower().startswith(p):
@@ -183,7 +203,9 @@ class Clean:
     email: str | None
     telegram: str | None
     university: str
+    institution_kind: str | None
     direction: str | None
+    profile: bool  # a direction relevant for a beverage plant (by department id or by the free-text keywords)
     course: str | None
     course_num: int | None
     graduate: bool
@@ -200,13 +222,13 @@ def _blank(v: str | None) -> str | None:
 
 def clean(body: LeadIn, on: date) -> Clean:
     """Field-level validation and normalisation. Raises 422 validation_error; consent / age are checked by the caller."""
-    phone, email, telegram = _blank(body.phone), _blank(body.email), _blank(body.telegram)
+    phone, email, telegram = _blank(body.phone), _blank(body.email), _blank(body.telegram) or _blank(body.tg_username)
     if phone is not None and (phone := normalize_phone(phone)) is None:
         raise invalid("phone", "Not a phone number")
     if email is not None and (email := normalize_email(email)) is None:
         raise invalid("email", "Not an e-mail address")
     if telegram is not None and (telegram := normalize_telegram(telegram)) is None:
-        raise invalid("telegram", "Telegram username must be 5..32 letters, digits or underscores")
+        raise invalid("telegram", "Telegram username must be 4..32 letters, digits or underscores")
     if (raw := _blank(body.contact)) is not None:
         found = classify_contact(raw)
         if found is None:
@@ -233,18 +255,28 @@ def clean(body: LeadIn, on: date) -> Clean:
     label, num, graduate = parse_course(body.course)
     if num is not None and not 1 <= num <= 10:
         raise invalid("course", "Course must be 1..10")
+    kind = _blank(body.institution_kind)
+    if kind is not None and (kind := kind.lower()) not in INSTITUTION_KINDS:
+        raise invalid("institutionKind", f"Expected one of {', '.join(INSTITUTION_KINDS)}")
+    direction = _blank(body.direction)
+    if (dept := _blank(body.department)) is not None:
+        if (dept := dept.lower()) not in DEPARTMENTS:
+            raise invalid("department", f"Unknown department, expected one of {', '.join(DEPARTMENTS)}")
+        direction, profile = DEPARTMENTS[dept][0], DEPARTMENTS[dept][1] is not None
+    else:
+        profile = is_profile_direction(direction)
     return Clean(
         full_name=" ".join(body.full_name.split()), birth_date=birth, phone=phone, email=email, telegram=telegram,
-        university=body.university, direction=_blank(body.direction), course=label, course_num=num, graduate=graduate,
+        university=body.university, institution_kind=kind, direction=direction, profile=profile, course=label, course_num=num, graduate=graduate,
         vacancy=vacancy, ready_from=ready_from, readiness=body.readiness, practice_type=body.practice_type,
-        consent_version=_blank(body.consent_text_version))
+        consent_version=_blank(body.consent_text_version) or _blank(body.consent_version))
 
 
 def compute_tags(c: Clean, quiz_correct: int, on: date) -> list[str]:
     tags = []
-    if c.graduate or (c.course_num is not None and c.course_num >= SENIOR_COURSE):
+    if c.graduate or c.institution_kind == "college" or (c.course_num is not None and c.course_num >= SENIOR_COURSE):
         tags.append(TAG_SENIOR)
-    if is_profile_direction(c.direction):
+    if c.profile:
         tags.append(TAG_PROFILE)
     if c.readiness in ("now", "season") or (c.ready_from is not None and (c.ready_from - on).days <= READY_WINDOW_DAYS):
         tags.append(TAG_READY)
@@ -265,9 +297,10 @@ async def enqueue(session: AsyncSession, kind: str, payload: dict[str, Any]) -> 
 
 
 async def quiz_counts(session: AsyncSession, user_id: int) -> tuple[int, int]:
-    """(correct, answered) of the player's quiz."""
+    """(correct, answered) of the player's quiz (answers to questions of the current bank only)."""
     row = (await session.execute(select(func.count().filter(QuizAnswer.correct.is_(True)), func.count())
-                                 .where(QuizAnswer.user_id == user_id))).one()
+                                 .where(QuizAnswer.user_id == user_id,
+                                        QuizAnswer.question_id.in_(quiz_bank.IDS)))).one()  # not the S5 bank's ids
     return row[0], row[1]
 
 
@@ -283,16 +316,21 @@ def best_from_skills(skills: Any) -> str | None:
     return best_profession(skills)[0] if isinstance(by, dict) and by else None
 
 
+def epoch_ms(v: datetime) -> int:
+    return int(v.timestamp() * 1000)
+
+
 def lead_out(l: Lead) -> dict[str, Any]:
-    """The owner's view of a lead (no hr_note: HR's private comment)."""
+    """The owner's view of a lead (no hr_note: HR's private comment). The client's LeadInfo is
+    `{status, createdAt (ms epoch, a number), roleId}`; the other fields stay."""
     return {
         "id": l.id, "seasonId": l.season_id, "status": l.status, "tags": list(l.tags or []),
         "fullName": l.full_name, "birthDate": iso(l.birth_date), "phone": l.phone, "email": l.email,
-        "telegram": l.telegram, "university": l.university, "direction": l.direction, "course": l.course,
-        "vacancy": l.vacancy, "readyFrom": iso(l.ready_from), "readiness": l.readiness, "practiceType": l.practice_type,
+        "telegram": l.telegram, "university": l.university, "institutionKind": l.institution_kind,
+        "direction": l.direction, "course": l.course, "vacancy": l.vacancy, "roleId": l.vacancy, "readyFrom": iso(l.ready_from), "readiness": l.readiness, "practiceType": l.practice_type,
         "consent": l.consent, "consentAt": iso(l.consent_at), "consentTextVersion": l.consent_text_version,
         "consentRevokedAt": iso(l.consent_revoked_at), "bestProfession": l.best_profession,
-        "seasonPlace": l.season_place, "quizScore": l.quiz_score, "createdAt": iso(l.created_at),
+        "seasonPlace": l.season_place, "quizScore": l.quiz_score, "createdAt": epoch_ms(l.created_at),
         "updatedAt": iso(l.updated_at),
     }
 
@@ -343,7 +381,8 @@ class LeadService:
             tags = compute_tags(c, correct, on)
             values = dict(
                 user_id=user.id, season_id=season_id, full_name=c.full_name, birth_date=c.birth_date, phone=c.phone,
-                email=c.email, telegram=c.telegram, university=c.university, direction=c.direction, course=c.course,
+                email=c.email, telegram=c.telegram, university=c.university, institution_kind=c.institution_kind,
+                direction=c.direction, course=c.course,
                 vacancy=c.vacancy, ready_from=c.ready_from, readiness=c.readiness, practice_type=c.practice_type,
                 consent=True, consent_at=now, consent_text_version=c.consent_version, tags=tags,
                 best_profession=best, season_place=place, quiz_score=correct if answered else None)
@@ -358,7 +397,7 @@ class LeadService:
             await enqueue(session, "lead_created", {
                 "lead_id": lead.id, "user_id": user.id, "tg_id": user.tg_id, "season_id": season_id,
                 "source": user.source, "full_name": lead.full_name, "university": lead.university,
-                "direction": lead.direction, "course": lead.course, "vacancy": lead.vacancy,
+                "institution_kind": lead.institution_kind, "direction": lead.direction, "course": lead.course, "vacancy": lead.vacancy,
                 "practice_type": lead.practice_type, "readiness": lead.readiness, "phone": lead.phone,
                 "email": lead.email, "telegram": lead.telegram, "tags": tags, "quiz_score": lead.quiz_score,
                 "best_profession": best, "season_place": place, "created_at": iso(lead.created_at)})

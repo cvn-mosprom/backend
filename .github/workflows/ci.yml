@@ -20,12 +20,16 @@ jobs:
       postgres:
         image: docker.io/library/postgres:16-bookworm@sha256:d81f7b51697014367236d07ec58b54153fc28f828b72bf247fe5c7487520bcb0
         env: {POSTGRES_USER: mosprom, POSTGRES_PASSWORD: mosprom, POSTGRES_DB: mosprom_test}
-        ports: ['5432/tcp']
-        options: --health-cmd 'pg_isready -U mosprom' --health-interval 5s --health-timeout 3s --health-retries 20
+        ports: ['5432']
+        options: >-
+          --health-cmd "pg_isready -U mosprom"
+          --health-interval 5s --health-timeout 3s --health-retries 20
       redis:
         image: docker.io/library/redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
-        ports: ['6379/tcp']
-        options: --health-cmd 'redis-cli ping' --health-interval 5s --health-timeout 3s --health-retries 20
+        ports: ['6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

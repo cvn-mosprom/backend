@@ -177,7 +177,8 @@ async def fits_for_user(session: AsyncSession, user_id: int, *, only_active: boo
     if not cands:
         return []
     rows = (await session.execute(text(
-        "SELECT id, profession_id, title, active, requirements FROM vacancies " + ("WHERE active " if only_active else "") + "ORDER BY id"))).mappings().all()
+        "SELECT id, profession_id, title, active, requirements FROM vacancies "
+        "WHERE (:only_active = false OR active) ORDER BY id"), {"only_active": only_active})).mappings().all()
     out = [{"vacancyId": r["id"], "professionId": r["profession_id"], "title": r["title"], "active": r["active"],
             **fit_for(cands[0], r["requirements"] or EMPTY_REQUIREMENTS)} for r in rows]
     out.sort(key=lambda r: (-r["score"], r["vacancyId"]))

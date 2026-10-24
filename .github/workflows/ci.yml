@@ -2,14 +2,14 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main, 'infra/**']
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
   packages: read
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (startsWith(github.ref, 'refs/heads/infra/') && vars.PROTOTYPE_CD_ENABLED != 'true') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   security:
     uses: ./.github/workflows/security.yml
@@ -107,7 +107,7 @@ jobs:
         run: bash tools/e2e.sh
   publish:
     needs: [quality, integration, security]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PROTOTYPE_CD_ENABLED != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions: {contents: read, packages: write, id-token: write}
@@ -171,7 +171,7 @@ jobs:
         with: {name: 'image-${{ matrix.name }}', path: image.json, retention-days: 14}
   release-pr:
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PROTOTYPE_CD_ENABLED != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -199,7 +199,7 @@ jobs:
         run: bash deploy/scripts/release_pr.sh artifacts
   publish-prototype:
     needs: [quality, integration, security]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/infra/devops-regional-routing'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PROTOTYPE_CD_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions: {contents: read, packages: write, id-token: write}
@@ -269,7 +269,7 @@ jobs:
         with: {name: 'prototype-image-${{ matrix.name }}', path: image.json, retention-days: 30}
   deliver-prototype:
     needs: publish-prototype
-    if: github.event_name == 'push' && github.ref == 'refs/heads/infra/devops-regional-routing' && vars.PROTOTYPE_CD_ENABLED == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PROTOTYPE_CD_ENABLED == 'true'
     runs-on: ubuntu-24.04
     environment: prototype
     timeout-minutes: 20
@@ -289,7 +289,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: cvn-mosprom/deploy
-          ref: infra/devops-regional-routing
+          ref: main
           token: ${{ steps.app.outputs.token }}
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c

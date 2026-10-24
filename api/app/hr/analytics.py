@@ -47,9 +47,18 @@ _WHERE = ("WHERE coalesce(u.is_bot, false) = false AND coalesce(u.is_test, false
           "AND (CAST(:since AS timestamptz) IS NULL OR l.created_at >= :since)")
 _LEADS = f"{_FROM} {_WHERE}"
 # candidates with a player row, plus the score row of the player's current season (the one the C4 list shows)
-_SCORED = (f"{_FROM} LEFT JOIN LATERAL (SELECT s.achievement_points, s.competency FROM factories f "
-           f"JOIN player_scores s ON s.user_id = f.user_id AND s.season_id = f.season_id WHERE f.user_id = l.user_id) ps ON true "
-           f"{_WHERE} AND l.user_id IS NOT NULL")
+_SCORED = """
+FROM leads l LEFT JOIN users u ON u.id = l.user_id
+LEFT JOIN LATERAL (
+    SELECT s.achievement_points, s.competency FROM factories f
+    JOIN player_scores s ON s.user_id = f.user_id AND s.season_id = f.season_id
+    WHERE f.user_id = l.user_id
+) ps ON true
+WHERE coalesce(u.is_bot, false) = false AND coalesce(u.is_test, false) = false
+  AND l.consent_revoked_at IS NULL
+  AND (CAST(:since AS timestamptz) IS NULL OR l.created_at >= :since)
+  AND l.user_id IS NOT NULL
+"""
 
 
 def _status(s: str) -> str:

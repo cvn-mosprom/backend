@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import insert, select, text
+from sqlalchemy import column, func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..achievements import catalog
@@ -99,7 +99,8 @@ def _like(s: str) -> str:
 
 
 def _comp_sql(key: str) -> str:
-    assert key in COMPETENCIES  # whitelisted: interpolated into the SQL text
+    if key not in COMPETENCIES:
+        raise ValueError("unknown competency")
     return (f"(CASE WHEN jsonb_typeof(c.competency -> '{key}') = 'number' THEN (c.competency ->> '{key}')::numeric ELSE 0 END)")
 
 
@@ -250,11 +251,15 @@ class Candidates:
         self.sm = sm
         self.bots = bots_enabled
 
-    def _wrap(self, where: list[str], tail: str = "", base: str = _BASE) -> str:
-        return f"SELECT c.* FROM ({base}) c" + (" WHERE " + " AND ".join(where) if where else "") + tail
+    def _wrap(self, where: list[str], *, base: str = _BASE):
+        # Only these two application-owned templates may define the subquery.
+        if base not in (_BASE, _BASE_ONE):
+            raise ValueError("unknown candidate query")
+        candidates = text(base).columns(*(column(name) for name in _COLUMNS)).subquery("c")
+        return select(candidates).where(*(text(condition) for condition in where))
 
     async def _one(self, session: AsyncSession, lead_id: int) -> Any:
-        sql = text(self._wrap(["c.id = :lid"], base=_BASE_ONE)).bindparams(bots=self.bots, lid=lead_id)
+        sql = self._wrap(["c.id = :lid"], base=_BASE_ONE).params(bots=self.bots, lid=lead_id)
         row = (await session.execute(sql)).first()
         if row is None:
             raise AppError("lead_not_found", "Candidate not found")
@@ -268,14 +273,14 @@ class Candidates:
         conds, params = f.sql(actor)
         params["bots"] = self.bots
         async with self.sm() as session:
-            total = (await session.execute(text(f"SELECT count(*) FROM ({self._wrap(conds)}) t"), params)).scalar_one()
+            total = (await session.execute(select(func.count()).select_from(self._wrap(conds).subquery("t")), params)).scalar_one()
             page_conds, page_params = list(conds), dict(params)
             if cursor:
                 value, last_id = decode_cursor(cursor, sort)
                 page_conds.append(_SORT[sort][1])
                 page_params.update(cv=value, cid=last_id)
-            sql = self._wrap(page_conds, f" ORDER BY {_SORT[sort][0]} LIMIT :lim")
-            rows = (await session.execute(text(sql), {**page_params, "lim": limit + 1})).all()
+            sql = self._wrap(page_conds).order_by(text(_SORT[sort][0])).limit(limit + 1)
+            rows = (await session.execute(sql, page_params)).all()
         more = len(rows) > limit
         rows = rows[:limit]
         return {"items": [_masked_row(r, actor) for r in rows], "total": int(total),
@@ -286,12 +291,15 @@ class Candidates:
         conds, params = f.sql(actor)
         params["bots"] = self.bots
         async with self.sm() as session:
+            candidates = self._wrap(conds).subquery("c")
             counts = dict((await session.execute(
-                text(f"SELECT t.status, count(*) FROM ({self._wrap(conds)}) t GROUP BY t.status"), params)).all())
-            sql = ("SELECT * FROM (SELECT c.*, row_number() OVER (PARTITION BY c.status ORDER BY c.stage_changed_at DESC, c.id DESC) AS rn "
-                   f"FROM ({_BASE}) c" + (" WHERE " + " AND ".join(conds) if conds else "") + ") t WHERE t.rn <= :per "
-                   "ORDER BY t.status, t.rn")
-            rows = (await session.execute(text(sql), {**params, "per": PIPELINE_ITEMS})).all()
+                select(candidates.c.status, func.count()).group_by(candidates.c.status), params)).all())
+            ranked = select(candidates, func.row_number().over(
+                partition_by=candidates.c.status,
+                order_by=(candidates.c.stage_changed_at.desc(), candidates.c.id.desc()),
+            ).label("rn")).subquery("t")
+            sql = select(ranked).where(ranked.c.rn <= PIPELINE_ITEMS).order_by(ranked.c.status, ranked.c.rn)
+            rows = (await session.execute(sql, params)).all()
         by_status: dict[str, list[dict[str, Any]]] = {s: [] for s in STATUSES}
         for r in rows:
             by_status[r.status].append(_masked_row(r, actor))

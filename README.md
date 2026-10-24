@@ -270,7 +270,7 @@ flowchart LR
   STG -->|"те же digest, вручную"| PRD["production"]
 ```
 
-* **`.github/workflows/ci.yml`** — на PR, `main` и `infra/**`: отдельные окружения API и бота из lock-файлов с хэшами, PostgreSQL и Redis на изолированных портах, тесты симулятора, миграций, контракта и настоящего клиента (`tools/e2e.sh`); неожиданные пропуски тестов блокируют выпуск (`tools/check_pytest.py`).
+* **`.github/workflows/ci.yml`** — на PR, `main`: отдельные окружения API и бота из lock-файлов с хэшами, PostgreSQL и Redis на изолированных портах, тесты симулятора, миграций, контракта и настоящего клиента (`tools/e2e.sh`); неожиданные пропуски тестов блокируют выпуск (`tools/check_pytest.py`).
 * **Образы одной связки.** api, bot, sim и web собираются из одного SHA бэкенда и фронтенда, сканируются Trivy до публикации (High/Critical, включая unfixed, — стоп), подписываются cosign и получают SBOM и provenance. API и бот — на Python 3.12 Alpine, Caddy пересобирается с исправленными Go и `x/net` (`web/caddy/README.md`), web-образ генерирует CSP-хэши инлайн-скриптов (`web/generate-csp.mjs`).
 * **`.github/workflows/security.yml`** — еженедельное пересканирование, его же вызывает CI.
 * **Выбор дата-центра.** Клиент берёт каталог регионов у LoadBalancer и меряет задержку анонимным `/routing/ping`; несовместимый клиент получает `426` до изменения состояния. Схема площадок, Patroni, Redis Sentinel и lease бота в etcd — в [`deploy`](https://github.com/cvn-mosprom/deploy#как-клиент-выбирает-дата-центр).
@@ -280,7 +280,7 @@ flowchart LR
 
 При запуске frontend запрашивает через LoadBalancer список доступных региональных API: **МОСКВА-1, КАЗАНЬ, САНКТ-ПЕТЕРБУРГ и МОСКВА-2**. Клиент проверяет доступность и задержку HTTPS-запросов, выбирает подходящий дата-центр и направляет туда игровые запросы. При отказе соединения выполняется контролируемое переключение с сохранением правил идемпотентности.
 
-**CD прототипа включён** для `infra/devops-regional-routing`: `publish-prototype` выпускает проверенные API/bot/sim/web с cosign и SLSA v1; `deliver-prototype` повторно проверяет подписи на сервере, сохраняет дамп, выполняет миграции и обновляет только эти четыре сервиса. Секрет SSH находится в environment `prototype`; разрешена только эта ветка. Лендинг — `/`, игра и меню бота — `/app`. Существующие Patroni, etcd, Xray, PostgreSQL и Redis прототипа не обновляются. Отдельные staging/production требуют собственного bootstrap. Инструкции и фактические результаты — [PROTOTYPE-CD.md](https://github.com/cvn-mosprom/deploy/blob/infra/devops-regional-routing/PROTOTYPE-CD.md) и [PROTOTYPE-VALIDATION.md](https://github.com/cvn-mosprom/deploy/blob/infra/devops-regional-routing/PROTOTYPE-VALIDATION.md).
+**CD прототипа включён** для `main`: `publish-prototype` выпускает проверенные API/bot/sim/web с cosign и SLSA v1; `deliver-prototype` повторно проверяет подписи на сервере, сохраняет дамп, выполняет миграции и обновляет только эти четыре сервиса. Секрет SSH находится в environment `prototype`; разрешена только эта ветка. Лендинг — `/`, игра и меню бота — `/app`. Существующие Patroni, etcd, Xray, PostgreSQL и Redis прототипа не обновляются. Отдельные staging/production требуют собственного bootstrap. Инструкции и фактические результаты — [PROTOTYPE-CD.md](https://github.com/cvn-mosprom/deploy/blob/main/PROTOTYPE-CD.md) и [PROTOTYPE-VALIDATION.md](https://github.com/cvn-mosprom/deploy/blob/main/PROTOTYPE-VALIDATION.md).
 
 ## Настройка
 

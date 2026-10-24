@@ -14,16 +14,18 @@ cat > .env <<'ENV'
 APP_ENV=dev
 DEV_AUTH=1
 DOMAIN=http://localhost
-WEBAPP_URL=http://localhost/
+WEBAPP_URL=http://localhost/app
 BOT_TOKEN=123456:TEST-BOT-TOKEN
 INTERNAL_TOKEN=ci-only-internal-token-0123456789
+HR_ADMIN_TG_IDS=1700000000005
 ENV
 export SIM_COMMIT
 SIM_COMMIT="$(git rev-parse HEAD:vendor/frontend)"
 docker compose up -d --build --wait --wait-timeout 300
-export E2E_BASE E2E_DOCKER=1 E2E_BOT_TOKEN=123456:TEST-BOT-TOKEN
+export E2E_BASE E2E_DOCKER=1 E2E_BOT_TOKEN=123456:TEST-BOT-TOKEN HR_E2E_ADMIN_TG=1700000000005
 published="$(docker compose port caddy 80)"
 E2E_BASE="http://localhost:${published##*:}"
+export HR_E2E_API="$E2E_BASE"
 python -m venv e2e/.venv
 e2e/.venv/bin/pip install --require-hashes -r e2e/requirements.lock
 (

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -87,12 +88,15 @@ async def amain(settings: Settings, stop: asyncio.Event | None = None) -> int:
     stop = stop or asyncio.Event()
     install_signal_handlers(stop)
 
+    bot = make_bot(settings)
+    if settings.app_env == "prod" and bot is None:
+        raise RuntimeError("Valid BOT_TOKEN required in production")
+
     scheduler = build_scheduler()
     register_jobs(scheduler)
     scheduler.start()
     log.info("scheduler started (env=%s)", settings.app_env)
 
-    bot = make_bot(settings)
     hr_runtime.setup(settings, bot)  # S6: DB session factory + bot for the HR commands and the outbox job
     try:
         if bot is None:
@@ -123,6 +127,9 @@ def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
     log.info("bot starting (webapp_url=%s)", settings.webapp_url or "-")
+    if os.environ.get("ETCD_ENDPOINTS"):
+        from .lease import run_with_lease
+        raise SystemExit(asyncio.run(run_with_lease(lambda stop: amain(settings, stop))))
     raise SystemExit(asyncio.run(amain(settings)))
 
 

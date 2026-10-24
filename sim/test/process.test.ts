@@ -13,15 +13,15 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const dist = root + 'dist/server.mjs';
 
 describe('workerCount (SIM_WORKERS)', () => {
-	it('defaults to 2, clamps to 4, 0 means in-process, garbage falls back to 2', () => {
+	it('defaults to 2, accepts explicit scale, 0 means in-process, rejects garbage', () => {
 		assert.equal(workerCount(undefined), 2);
 		assert.equal(workerCount(''), 2);
 		assert.equal(workerCount('3'), 3);
 		assert.equal(workerCount('4'), 4);
-		assert.equal(workerCount('99'), 4);
+		assert.equal(workerCount('99'), 99);
 		assert.equal(workerCount('0'), 0);
-		assert.equal(workerCount('-1'), 2);
-		assert.equal(workerCount('abc'), 2);
+		assert.throws(() => workerCount('-1'));
+		assert.throws(() => workerCount('abc'));
 	});
 });
 

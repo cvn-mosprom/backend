@@ -13,7 +13,15 @@
 	# one JSON access line per request on stdout (the bot's 5xx alert can read these)
 	log {
 		output stdout
-		format json
+		format filter {
+            wrap json
+            fields {
+                request>headers>X-Telegram-Init-Data delete
+                request>headers>X-Dev-User delete
+                request>headers>Authorization delete
+                request>headers>Cookie delete
+            }
+        }
 	}
 
 	# /internal/* (background-job endpoints called by the bot over the compose network, X-Internal-Token) is never
@@ -26,7 +34,7 @@
 
 	# No method matcher on purpose: CORS preflights (OPTIONS /api/*) must reach the api, whose CORSMiddleware answers
 	# them (200 + Access-Control-*) before auth and the rate limiter. CORS headers on real responses come from the api too.
-	@api path /api/* /health /ready
+	@api path /api/* /health /ready /routing/ping /routing/report
 	handle @api {
 		request_body {
 			max_size 2MB

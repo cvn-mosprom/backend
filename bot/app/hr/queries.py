@@ -280,14 +280,12 @@ async def stats(s: AsyncSession, quiz_total: int, now: datetime | None = None,
 
 
 async def top(s: AsyncSession, season_id: int, university: str | None, include_bots: bool, limit: int = 10) -> list[dict[str, Any]]:
-    conds, params = ["f.season_id = :sid", "NOT (f.is_test OR u.is_test)"], {"sid": season_id, "n": limit}  # test users never
-    if not include_bots:
-        conds.append("NOT (f.is_bot OR u.is_bot)")
-    if university:
-        conds.append("f.university ILIKE :uni ESCAPE '!'")
-        params["uni"] = like_pattern(university)
+    params = {"sid": season_id, "n": limit, "include_bots": include_bots,
+              "uni": like_pattern(university) if university else None}
     rows = (await s.execute(text(
         "SELECT f.user_id, f.name, f.stars, f.level, f.university, (f.is_bot OR u.is_bot) AS is_bot, u.username, u.first_name "
-        f"FROM factories f JOIN users u ON u.id = f.user_id WHERE {' AND '.join(conds)} "
+        "FROM factories f JOIN users u ON u.id = f.user_id WHERE f.season_id = :sid "
+        "AND NOT (f.is_test OR u.is_test) AND (CAST(:include_bots AS boolean) OR NOT (f.is_bot OR u.is_bot)) "
+        "AND (CAST(:uni AS text) IS NULL OR f.university ILIKE :uni ESCAPE '!') "
         "ORDER BY f.stars DESC, f.user_id ASC LIMIT :n"), params)).mappings().all()
     return [dict(r) for r in rows]

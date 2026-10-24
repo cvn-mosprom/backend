@@ -119,7 +119,7 @@ async def test_access_log_fields(make_client, caplog):
     first, second = recs[0].fields, recs[1].fields
     assert first["request_id"] == "log-1" and first["method"] == "GET" and first["path"] == "/nope"
     assert first["status"] == 404 and first["error_code"] == "not_found"
-    assert isinstance(first["duration_ms"], float) and first["user_id"] is None
+    assert isinstance(first["duration_ms"], float) and "user_id" not in first and "tg_id" not in first
     assert second["status"] == 401 and second["error_code"] == "unauthorized"
 
 

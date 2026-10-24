@@ -176,13 +176,14 @@ async def test_valid_init_data_creates_user_once(live):
     assert [tuple(r) for r in rows] == [(424242, "uni_msu", False, False)]
 
 
-async def test_access_log_carries_user_id(live, caplog):
+async def test_access_log_omits_personal_identifiers(live, caplog):
     import logging
 
     with caplog.at_level(logging.INFO):
         me = (await live.get("/api/me", headers=dev(55, "Logged"))).json()
     rec = [r for r in caplog.records if r.name == "mosprom.access"][-1].fields
-    assert rec["user_id"] == me["id"] and rec["tg_id"] == 55
+    assert "user_id" not in rec and "tg_id" not in rec
+    assert me["id"] is not None and rec["request_id"]
     assert rec["status"] == 200 and rec["path"] == "/api/me" and rec["error_code"] is None
 
 

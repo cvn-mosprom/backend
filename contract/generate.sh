@@ -26,8 +26,7 @@ case " $* " in
       elif command -v python3.12 >/dev/null 2>&1; then python3.12 -m venv .venv
       else python3 -m venv .venv; fi
       if [ -x .venv/Scripts/python.exe ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
-      "$PY" -m pip install -q --upgrade pip
-      "$PY" -m pip install -q -r requirements.txt
+            "$PY" -m pip install -q --require-hashes -r requirements.lock
     fi
     ;;
 esac

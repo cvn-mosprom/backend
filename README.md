@@ -158,8 +158,8 @@ Change `HTTP_PORT`/`HTTPS_PORT` in `.env`. Reset everything including data: `doc
   Restore (stops api + bot, safety dump first, runs the migrations afterwards): `sh scripts/restore.sh backups/<file>.dump`.
 * **Internal token.** `INTERNAL_TOKEN` is shared by api and bot (`/internal/*`, header `X-Internal-Token`). The dev placeholder
   works only with `APP_ENV=dev`; the api refuses to start with `APP_ENV=prod` unless it is a real secret (`openssl rand -hex 24`).
-* **Workers.** `API_WORKERS` (default 2, max 4: every worker keeps a DB pool of 10), `SIM_WORKERS` (default 2, max 4).
-* **Logs.** `docker compose logs -f api`: one JSON line per request (`request_id`, `user_id`, `status`, `error_code`,
+* **Workers.** Configure API workers, DB pools and `SIM_WORKERS` together with CPU/RAM. `SIM_WORKERS` accepts integers 0..256; 0 is a debugging mode. Production settings and connection budgets are maintained in deploy.
+* **Logs.** `docker compose logs -f api`: one JSON line per request (`request_id`, `status`, `error_code`,
   `duration_ms`); breaker transitions carry `breaker_state`; `"msg": "slow request"` marks anything over 1 s.
 
 ## Contract (client commands and snapshot)
@@ -193,3 +193,29 @@ docker-compose.yml  Caddyfile  .env.example  .dockerignore  PROGRESS.md
 ```
 
 `scripts/simcommit.sh` prints the vendored frontend commit (`git -C vendor/frontend rev-parse --short HEAD`).
+
+## Production: DevOps, DevSecOps и распределённый профиль
+
+Система готова к развёртыванию на распределённой инфраструктуре и поддерживает **горизонтальное и вертикальное масштабирование серверной части игры**. Референс: **МОСКВА-1, КАЗАНЬ, САНКТ-ПЕТЕРБУРГ, МОСКВА-2 и внешний LoadBalancer**. Production-конфигурации и статус испытаний находятся в [deploy](https://github.com/cvn-mosprom/deploy); Compose этого репозитория предназначен для разработки и изолированного E2E.
+
+Frontend в начале получает через LoadBalancer список региональных API, проверяет доступность и HTTPS-задержку («пинг») и выбирает совместимый дата-центр с лучшей медианой. API обслуживает анонимный некэшируемый `/routing/ping`, диагностику `/routing/report` и закрытый ingress-ом `/metrics`. Выбор региона меняет маршрут запросов; игровое состояние остаётся общим.
+
+API и sim масштабируются числом экземпляров и площадок. Вертикально настраиваются CPU/RAM, API_WORKERS, SIM_WORKERS и connection pools. SIM_WORKERS принимает целое 0..256 без скрытого ограничения четырьмя; 0 — отладочный режим. В HA приложение использует PgBouncer/HAProxy и текущий PostgreSQL primary, миграции обходят PgBouncer. Patroni создаёт асинхронные реплики; увеличение их числа не увеличивает линейно производительность записи и не гарантирует RPO=0.
+
+Redis поддерживает прямой URL и TLS/Sentinel: REDIS_SENTINEL_NODES, REDIS_MASTER_NAME, REDIS_PASSWORD, REDIS_SENTINEL_PASSWORD, REDIS_TLS, REDIS_CA_FILE. PostgreSQL TLS: DB_TLS, DB_CA_FILE. В etcd-режиме бот держит один lease для polling и планировщика; потеря подтверждения останавливает работу. Параметры ETCD_ENDPOINTS/CA_FILE/CERT_FILE/KEY_FILE передаются отдельно от исходников.
+
+CI использует отдельные окружения API и бота, lock-файлы с хэшами, PostgreSQL/Redis с изолированными портами, тесты симулятора, миграций, контракта и настоящего клиента. Неожиданные пропуски блокируют выпуск. API, bot, sim и web собираются из одной связки backend/frontend SHA, сканируются до публикации, подписываются cosign и получают SBOM/provenance. Полный комплект предлагается одним PR в deploy. Staging обновляется автоматически; production принимает те же digest после ручного запуска.
+
+API access logs не содержат user_id/tg_id, а production preflight требует сильных секретов, явных HTTPS origins и роли приложения без административных прав. X-Frontend-Revision проверяется при заданном FRONTEND_REVISION, чтобы старый клиент не изменял состояние нового несовместимого релиза. Все коммиты используют автора из `.github/commit-author.json`.
+
+```mermaid
+flowchart LR
+  Start[Запуск клиента] --> LB[LoadBalancer /routing/regions]
+  LB --> Probe[Совместимость и HTTPS-пинг]
+  Probe --> Region[Выбранный дата-центр]
+  Region --> Game[Игровые запросы]
+  Game -->|Отказ или draining| LB
+  LB -->|Discovery недоступен| Fallback[Общий API LoadBalancer]
+```
+
+Результаты локальных и моделируемых проверок, а также невыполненные испытания реальных площадок: [VALIDATION](https://github.com/cvn-mosprom/deploy/blob/main/VALIDATION.md).

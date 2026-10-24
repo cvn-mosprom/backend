@@ -30,6 +30,7 @@ class Limit:
 
 # Spec "Блок 7" (per user per minute). `default` is for light routes without a dedicated limit.
 LIMITS: dict[str, Limit] = {
+    "routing_report": Limit(10),
     "bootstrap": Limit(10),
     "factory_me": Limit(60),
     "command": Limit(120, burst=20),

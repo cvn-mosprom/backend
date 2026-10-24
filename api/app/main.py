@@ -11,8 +11,9 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from .db import make_engine, make_redis, make_sessionmaker
 from .errors import install_error_handlers
-from .middleware import RequestContextMiddleware, setup_logging
-from .routes import board, events, game, health, internal, leads, me, quiz
+from .middleware import RequestContextMiddleware, RevisionGuard, setup_logging
+from .routes import board, events, game, health, internal, leads, me, quiz, routing
+from .observability import MetricsMiddleware, metrics
 from .settings import Settings, get_settings
 from .sim_client import SimClient
 
@@ -20,7 +21,7 @@ log = logging.getLogger("mosprom.app")
 
 # http-contract.md "Общее": the web client sends X-Telegram-Init-Data / X-Dev-User / Content-Type and reads Retry-After
 CORS_METHODS = ["GET", "POST", "DELETE"]
-CORS_HEADERS = ["X-Telegram-Init-Data", "X-Dev-User", "Content-Type", "Authorization"]
+CORS_HEADERS = ["X-Telegram-Init-Data", "X-Dev-User", "Content-Type", "Authorization", "X-Frontend-Revision"]
 CORS_EXPOSE = ["Retry-After", "X-Request-ID"]
 CORS_MAX_AGE = 600
 
@@ -59,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                               breaker_open_s=settings.sim_breaker_open_s)
 
     install_error_handlers(app)
+    app.add_middleware(RevisionGuard, revision=settings.frontend_revision if settings.is_prod else "")
     app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
     # outermost: request id, access log, 5 s request cap (not /internal/*), slow-request log, last-resort 500
     app.add_middleware(RequestContextMiddleware, request_timeout_s=settings.request_timeout_s,
@@ -69,6 +71,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_methods=CORS_METHODS,
                        allow_headers=CORS_HEADERS, expose_headers=CORS_EXPOSE, max_age=CORS_MAX_AGE)
 
+    app.add_middleware(MetricsMiddleware)
+    app.add_api_route("/metrics", metrics, methods=["GET"], include_in_schema=False)
+    app.include_router(routing.router)
     app.include_router(health.router)
     app.include_router(me.router)
     app.include_router(game.router)

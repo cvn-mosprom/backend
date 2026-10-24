@@ -12,3 +12,8 @@ dist/
 .vscode/
 backups/
 .claude/
+
+# CI reports
+results.xml
+coverage.xml
+.coverage

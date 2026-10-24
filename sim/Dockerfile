@@ -9,7 +9,7 @@
 # The vendored lib is bundled into a single dist/server.mjs with esbuild, so the runtime stage has no node_modules and
 # no vendor sources: only node + the bundle.
 
-FROM docker.io/library/node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS build
+FROM docker.io/library/node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS build
 WORKDIR /repo/sim
 COPY sim/package.json sim/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -18,7 +18,7 @@ COPY vendor/frontend/web/src/lib /repo/vendor/frontend/web/src/lib
 COPY sim/ ./
 RUN npm run build
 
-FROM docker.io/library/node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+FROM docker.io/library/node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4
 ARG SIM_COMMIT=unknown
 ENV NODE_ENV=production \
     PORT=8080 \

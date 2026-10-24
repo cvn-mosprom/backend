@@ -36,6 +36,7 @@ docker-compose.yml
 Caddyfile
 README.md
 PROGRESS.md
+web
 
 # vendored frontend: keep web/src/lib only
 vendor/frontend/assets

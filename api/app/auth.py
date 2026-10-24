@@ -21,8 +21,9 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .errors import AppError
-from .models import User
+from .models import Factory, User
 from .settings import Settings
+from .testusers import is_test_identity
 
 log = logging.getLogger("mosprom.auth")
 
@@ -41,6 +42,7 @@ class Identity:
     username: str | None = None
     start_param: str | None = None
     auth_date: int = 0
+    is_test: bool = False  # dev auth only: e2e name or reserved tg_id range (app/testusers.py)
 
 
 def _invalid(msg: str = "Invalid initData") -> AppError:
@@ -98,7 +100,7 @@ def parse_dev_header(value: str) -> Identity:
         raise _invalid("dev auth expects '<tg_id>[:<name>]'") from None
     if not 0 < tg_id <= MAX_TG_ID:
         raise _invalid("dev tg_id must be a positive 64-bit integer")
-    return Identity(tg_id=tg_id, first_name=name.strip()[:64] or f"Dev{tg_id}")
+    return Identity(tg_id=tg_id, first_name=name.strip()[:64] or f"Dev{tg_id}", is_test=is_test_identity(tg_id, name))
 
 
 def credentials(request: Request) -> tuple[str, str]:
@@ -183,15 +185,20 @@ async def upsert_user(sessionmaker, ident: Identity) -> User:
             }
             if user.source is None and ident.start_param:
                 changed["source"] = ident.start_param
+            if ident.is_test and not user.is_test:  # sticky: a test user stays a test user
+                changed["is_test"] = True
             if changed or now - user.last_seen_at > LAST_SEEN_THROTTLE:
                 for k, v in changed.items():
                     setattr(user, k, v)
+                if changed.get("is_test"):
+                    await session.execute(update(Factory).where(Factory.user_id == user.id).values(is_test=True))
                 user.last_seen_at = now
             return user
         stmt = (
             pg_insert(User)
             .values(tg_id=ident.tg_id, username=ident.username, first_name=ident.first_name,
-                    last_name=ident.last_name, source=ident.start_param, last_seen_at=now)
+                    last_name=ident.last_name, source=ident.start_param, last_seen_at=now,
+                    is_test=ident.is_test)
             .on_conflict_do_update(  # lost a creation race: behave like the update path
                 index_elements=[User.tg_id], set_={"last_seen_at": now})
             .returning(User)

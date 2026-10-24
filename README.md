@@ -9,6 +9,8 @@ state. Product spec: `docs/spec-rev4.txt`; interfaces between the parts: `docs/A
 | `sim/` | stateless game simulation over internal HTTP; imports `vendor/frontend/web/src/lib` unchanged | Node 22, TypeScript, cluster workers |
 | `bot/` | Telegram bot, the single owner of all background jobs (APScheduler) | aiogram 3, APScheduler 3 |
 | `contract/` | JSON Schema + Pydantic generated from the frontend TypeScript contract | ts-json-schema-generator, datamodel-code-generator |
+| `web/` | `Dockerfile` of the caddy image: builds the Mini App (`vendor/frontend/web`, SvelteKit adapter-static, `VITE_API_URL=/`) and serves it next to the API on one origin | pnpm, Vite, Caddy 2 |
+| `e2e/` | tests against the running stack: raw HTTP scenarios, the smoke suite, and `e2e/client` (the frontend's real `HttpGameApi` in vitest) | pytest, httpx, vitest |
 | `vendor/frontend/` | read-only git submodule with the game client (`git submodule update --init`) | |
 
 ## For the jury
@@ -19,33 +21,56 @@ game state and the client only sends commands. Around the game: a season leaderb
 
 ```
  Mini App (browser) --HTTPS--> caddy --> api (FastAPI, 2 workers) --> db     Postgres 16: users, factories (state JSONB),
-                               TLS        |   |   |                          seasons, leads, quiz, events, outbox
-   only /api/*, /health, /ready           |   |   +-------------------> redis  rate limit, idempotency fast-path, top-100 cache
-   are proxied; /internal/* never         |   +-----------------------> sim    Node, stateless game engine (the client's own
+                               TLS +      |   |   |                          seasons, leads, quiz, events, outbox
+   caddy serves the web build  web build  |   |   +-------------------> redis  rate limit, idempotency fast-path, top-100 cache
+   and proxies /api/*, /health,           |   +-----------------------> sim    Node, stateless game engine (the client's own
                                           |        3 s timeout + circuit breaker                          lib/sim, unchanged)
  Telegram <--> bot (aiogram + APScheduler) --X-Internal-Token--> api /internal/*  season rotation, top-200 catch-up, bots growth;
                 HR cards, /leads /export /funnel                                   reads the DB directly for analytics
 ```
 
-**Run (about 2 minutes; needs Docker and `git submodule update --init`).**
+**Run (about 4 minutes the first time: the web build is compiled inside the caddy image; needs Docker and `git submodule update --init`).**
 
 ```sh
 cp .env.example .env
 SIM_COMMIT=$(sh scripts/simcommit.sh) docker compose up -d --build
 curl -k https://localhost/ready                      # {"status":"ready","checks":{"db":"ok","migrations":"ok","redis":"ok","sim":"ok","config":"ok"}}
+curl -k https://localhost/                           # the Mini App (index.html); open https://localhost/ in a browser and accept the local cert
 docker compose exec api python -m app.seed_bots      # 40 demo bots, so the leaderboard is not empty
 ```
 
-**Demo (dev auth, no Telegram needed; `DEV_AUTH=1` is the default of `.env.example`).** Header `Authorization: dev <tg_id>:<name>`.
+**One origin.** `caddy` serves the web build (`web/Dockerfile`, built with `VITE_API_URL=/`, so the client calls relative `/api/*`) and proxies
+`/api/*`, `/health`, `/ready` to the api; `/internal/*` is a 404. Every other path falls back to `index.html` (SPA routes `/play`, `/privacy`,
+prerendered `/landing`). Page and API share the origin, so prod needs no CORS (`CORS_ORIGINS` only matters for a vite dev server on `:5173`).
+Telegram opens `WEBAPP_URL` = `https://<DOMAIN>/` (`.env.example`: `https://${DOMAIN}/`). After a frontend bump: `docker compose build caddy && docker compose up -d caddy`.
+Without Docker: `cd vendor/frontend/web && npx pnpm@10 install --frozen-lockfile && VITE_API_URL=/ npx pnpm@10 build`, then serve `build/` with the
+`root * ...` / `try_files {path} {path}.html /index.html` / `file_server` block of the Caddyfile.
+
+**Auth headers** (contract: `vendor/frontend/docs/http-contract.md`). In Telegram the client sends `X-Telegram-Init-Data: <initData>` (prod). Outside Telegram
+(`DEV_AUTH=1` and `APP_ENV=dev`, the default of `.env.example`) it sends `X-Dev-User: <tg_id>` (it makes up and remembers a random id), so the web build works
+in a plain browser without any setup. `Authorization: tma <initData>` and `Authorization: dev <tg_id>[:<name>]` are accepted too (curl, bot, e2e); the first
+header present wins, in the order `Authorization`, `X-Telegram-Init-Data`, `X-Dev-User`. Dev auth does not exist under `APP_ENV=prod`.
+
+**Demo without Telegram (dev auth).**
 
 ```sh
-H='Authorization: dev 1001:Ivan'
+H='X-Dev-User: 1001'
 curl -sk -H "$H" https://localhost/api/bootstrap                                  # creates the factory, returns version + snapshot
 curl -sk -H "$H" 'https://localhost/api/season/leaderboard?tab=general&limit=5'   # tabs: general | quality | speed | uni
 curl -sk -H "$H" https://localhost/api/season/summary
 cd e2e && py -3.12 -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt && .venv/Scripts/python -m pytest
                                                                                   # plays the whole tutorial against the server
 ```
+
+**Demo in Telegram (needs a real domain and a bot token; it cannot be done from a dev machine).** Manual checklist, in this order:
+1. `.env`: `APP_ENV=prod`, `DEV_AUTH=0`, `DOMAIN=<your domain>` (DNS A record to this host, ports 80/443 open), `BOT_TOKEN`, `WEBAPP_URL=https://<your domain>/`, a real
+   `INTERNAL_TOKEN` and `POSTGRES_PASSWORD`, `HR_ADMIN_TG_IDS=<your tg id>` (optionally `HR_CHAT_ID`). In @BotFather set the Mini App / menu button URL to `WEBAPP_URL`.
+2. `SIM_COMMIT=$(sh scripts/simcommit.sh) docker compose up -d --build`; `curl https://<domain>/ready` shows all `ok`; `docker compose exec api python -m app.seed_bots`;
+   `docker compose exec api python -m app.purge_test_users` (drops e2e / test players, so the top is clean).
+3. In Telegram: `/start`, "Play": the Mini App opens on `https://<domain>/` without a "no connection" screen. Tutorial; accept an order, run a line, finish a shift
+   (credits / stars change, an `etaAt` appears on a loading order); undo works; "Top" shows the demo bots and you at your place; fill the application form (18+, consent);
+   take the quiz; the lead card arrives in the HR bot (`/leads`, `/funnel`, `/sources`, `/stats`, `/export`) with its status buttons.
+4. Afterwards `docker compose logs api | grep -c '"status": 5'` is 0 and `docker compose logs bot` has no ERROR lines.
 
 Show the resilience (what "stabilisation" means here): `docker compose restart api sim db`, then `/api/bootstrap` again - the
 factory and its version are unchanged. `docker compose stop sim` - `/api/factory/me` keeps answering from the last stored snapshot
@@ -63,7 +88,7 @@ instantly (circuit breaker). `docker compose start sim` - it heals by itself wit
 | `GET /api/season/leaderboard`, `/api/season/summary`, `/api/factory/{id}` | ranking (4 tabs, gap to place 51), season result, public view of a factory |
 | `POST /api/leads`, `GET`/`DELETE /api/leads/me` | application form (18+, consent, one per season), consent withdrawal (152-FZ); independent of the sim |
 | `GET /api/quiz/questions`, `POST /api/quiz/answer` | quiz with server-side answers |
-| `POST /api/events` | analytics batches (name whitelist, up to 50 events) |
+| `POST /api/events` | analytics batch, up to 50 events -> `{accepted, rejected}`: known events are stored, unknown names / bad timestamps / bad props are dropped and never fail the batch (422 only for a malformed body or > 50 events); 10/min + burst 6 (the client flushes every 5 s) |
 | `POST /internal/seasons/rotate`, `/internal/top/advance`, `/internal/bots/grow` | bot only (token); not reachable through caddy |
 
 **Reliability (S7).** DB statement timeout 3 s and lock timeout 2 s (`503 db_unavailable`), sim timeout 3 s, whole request 5 s
@@ -78,12 +103,13 @@ TypeScript), `bot/tests`, `e2e/` (against the running stack: tutorial, two tabs,
 restart / dead-sim scenarios of `e2e/test_s7_resilience.py`). Commands: see "Tests" below.
 
 **Known limitations.**
-* Waiting for the lead's sim work (S1 / S1U): **undo / redo are hidden** (`features.undo=false`, the server answers
-  `history_unavailable` until the history lives in the factory state) and **server-computed order ETAs are not in the snapshot yet**
-  (`features.serverOrderEta=false`; the client keeps estimating them itself).
+* Undo / redo and server-computed order ETAs (`etaAt`) are live (done by the frontend lead in the vendored `lib/core`; `features.undo` and
+  `features.serverOrderEta` are `true`): nothing is pending from S1 / S1U any more.
 * `speed` in the leaderboard is derived from produced bottles over time (the snapshot carries no flow rate yet).
-* Demo bots are fillers (`BOTS_ENABLED=0` hides them everywhere) and are excluded from every analytics number.
-* This stack does not host the Mini App web build; Telegram needs a real HTTPS domain (`DOMAIN`), a tunnel is the last resort.
+* Demo bots are fillers (`BOTS_ENABLED=0` hides them everywhere) and are excluded from every analytics number. **Test players** (dev auth with a name starting `e2e`, or a
+  tg_id >= 10^12; `users.is_test`) are excluded the same way from the top, ranks, season results, the HR numbers / CSV and the lead-card delivery;
+  `python -m app.purge_test_users [--dry-run]` deletes them with all their data before the demo.
+* Telegram opens a Mini App only over HTTPS on a real domain (`DOMAIN`); a tunnel is the last resort. The live Telegram run is the manual checklist above.
 * One Postgres on one host: backups protect against data loss, not against losing the machine (copy `./backups` elsewhere).
 
 ## Run
@@ -102,11 +128,11 @@ PowerShell: `$env:SIM_COMMIT = (git -C vendor/frontend rev-parse --short HEAD); 
 `SIM_COMMIT` pins the sim image (`mosprom-sim:<sha>`) to the vendored frontend commit (lib/sim), so a submodule bump is an explicit rebuild.
 Without it the image is tagged `mosprom-sim:dev`.
 
-Local auth: header `Authorization: dev 123:Ivan` (only while `DEV_AUTH=1` and `APP_ENV=dev`).
+Local auth: header `X-Dev-User: 123` or `Authorization: dev 123:Ivan` (only while `DEV_AUTH=1` and `APP_ENV=dev`); the web build sends `X-Dev-User` by itself.
 
 | Service | Role | Host access |
 |---|---|---|
-| `caddy` | TLS (automatic HTTPS), gzip/zstd, proxies `/api/*`, `/health`, `/ready` to `api:8000` | `80`, `443` (`HTTP_PORT`/`HTTPS_PORT` in `.env`) |
+| `caddy` | TLS (automatic HTTPS), gzip/zstd, serves the Mini App web build (`web/Dockerfile`), proxies `/api/*`, `/health`, `/ready` to `api:8000` | `80`, `443` (`HTTP_PORT`/`HTTPS_PORT` in `.env`) |
 | `api` | FastAPI, `API_WORKERS` (2) uvicorn workers | internal `:8000` |
 | `migrate` | one-shot `alembic upgrade head`, `api` waits for it | - |
 | `db` | `postgres:16-alpine`, volume `pgdata` | `127.0.0.1:55432` (`mosprom`/`mosprom`) |
@@ -122,7 +148,7 @@ Optional profiles:
 * `backup`: periodic `pg_dump` into `./backups` (see Operations).
 
 Production: set a real `DOMAIN` (DNS A record to the host, ports 80/443 open), `APP_ENV=prod`, `DEV_AUTH=0`, a real `BOT_TOKEN`,
-`WEBAPP_URL`, strong `POSTGRES_PASSWORD`. Telegram opens a Mini App only over HTTPS on a real domain. Port 80/443 busy on Windows?
+`WEBAPP_URL=https://<DOMAIN>/`, strong `POSTGRES_PASSWORD`. Telegram opens a Mini App only over HTTPS on a real domain. Port 80/443 busy on Windows?
 Change `HTTP_PORT`/`HTTPS_PORT` in `.env`. Reset everything including data: `docker compose down -v`.
 
 ### Operations
@@ -155,13 +181,14 @@ Details: `contract/README.md`.
 | bot | `cd bot && py -3.12 -m venv .venv && .venv/Scripts/python -m pip install -r requirements-dev.txt && .venv/Scripts/python -m pytest` |
 | api | `cd api && py -3.12 -m venv .venv && .venv/Scripts/python -m pip install -r requirements-dev.txt && .venv/Scripts/python -m pytest`; Postgres/Redis tests need the throwaway containers from the docstring of `api/tests/conftest.py` (ports 55433 / 56380), otherwise they skip |
 | sim | `cd sim && npm ci && npm run check` (typecheck, tests, bundle) |
+| e2e | stack up, then `cd e2e && py -3.12 -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt && .venv/Scripts/python -m pytest`: raw HTTP scenarios, the S7 smoke suite, and `test_s10_*` (the frontend's real `HttpGameApi` via vitest in `e2e/client`, see `e2e/README.md`); `E2E_DOCKER=1` adds the restart / dead-sim scenarios |
 
 On Linux/macOS use `.venv/bin/python` instead of `.venv/Scripts/python`.
 
 ## Layout
 
 ```
-api/  sim/  bot/  contract/  scripts/  docs/  vendor/frontend/   (see docs/ARCHITECTURE.md)
+api/  sim/  bot/  web/  e2e/  contract/  scripts/  docs/  vendor/frontend/   (see docs/ARCHITECTURE.md)
 docker-compose.yml  Caddyfile  .env.example  .dockerignore  PROGRESS.md
 ```
 

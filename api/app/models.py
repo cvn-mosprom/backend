@@ -40,6 +40,8 @@ class User(Base):
     source: Mapped[str | None] = mapped_column(Text)  # Telegram start_param
     ref_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
     is_bot: Mapped[bool] = mapped_column(server_default=text("false"), nullable=False)
+    # S13: e2e / test player (app/testusers.py): never in the board, ranks, season results or analytics
+    is_test: Mapped[bool] = mapped_column(server_default=text("false"), nullable=False)
     created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
     last_seen_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
     # S6 reminders (written by the bot): first /start, opt-in to order reminders, last opt-in / opt-out moments
@@ -83,6 +85,7 @@ class Factory(Base):
     speed_bph: Mapped[int] = mapped_column(server_default=text("0"), nullable=False)
     university: Mapped[str | None] = mapped_column(Text)
     is_bot: Mapped[bool] = mapped_column(server_default=text("false"), nullable=False)
+    is_test: Mapped[bool] = mapped_column(server_default=text("false"), nullable=False)  # = users.is_test (S13)
     # last GameSnapshot returned by the sim; served by GET /api/factory/me in degraded mode (sim down)
     snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)

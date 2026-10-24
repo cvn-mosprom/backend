@@ -62,7 +62,7 @@ def _ms(dt: datetime | None) -> int:
 
 
 def _universe(q, season_id: int, bots_enabled: bool, university: str | None, f=Factory):
-    q = q.where(f.season_id == season_id)
+    q = q.where(f.season_id == season_id, f.is_test.is_(False))  # e2e / test players are never ranked (S13)
     if not bots_enabled:
         q = q.where(f.is_bot.is_(False))
     if university:

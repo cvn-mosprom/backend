@@ -89,3 +89,36 @@ documented code, and only in the degraded scenario), a 429 always carries a nume
 **Known product bugs** found by the suite are kept as `xfail(strict=False)` items with the exact request in the reason (they turn into
 XPASS when fixed; run `pytest test_s7_smoke.py -q -rx` to list them): NUL characters in `idempotency_key` / `renameFactory.name` / the
 `university` query -> 500; `GET /api/factory/<5000 digits>` -> 500; `Authorization: dev <tg_id above 2^63-1>` -> 500.
+
+## S10 (contract test of the seam) - `client/`, `test_s10_client.py`, `test_s10_transport.py`
+
+Until S10 both sides tested only their own idea of the contract. `e2e/client` imports the **real** `HttpGameApi` from `vendor/frontend`
+(`$lib/*` -> `../../vendor/frontend/web/src/lib/*`, vitest alias) and drives it against the live stack the way the app does: `VITE_API_URL` =
+`E2E_BASE`, no Telegram `initData` so the client sends `X-Dev-User: <fresh random id>`. Node accepts Caddy's self-signed cert
+(`scenarios/setup.ts`). The assertions name the fields the client reads (`snapshot.version`, `Order.etaAt`, `LeadInfo.createdAt` as a number,
+quiz `score`, `features`, `undoSteps` ...), so a renamed or dropped field on the server turns a step red.
+
+```
+cd e2e/client && npm ci                         # once (test_s10_client.py runs it by itself when node_modules is missing)
+cd e2e && .venv/Scripts/python -m pytest test_s10_client.py test_s10_transport.py -v     # or the whole e2e run: everything is collected
+cd e2e/client && npx vitest run                 # the node suites alone (E2E_BASE, E2E_ORDER_WAIT_S as above; default wait 90 s, 0 = skip)
+cd e2e/client && npm run typecheck           # tsc over the scenarios AND the vendored client: type-level drift (a field removed from types.ts)
+```
+
+| Scenario file | What it drives |
+|---|---|
+| `scenarios/journey.test.ts` | one player, in order: bootstrap (version 0, `features` = undo/quiz/leads all true, season, tutorial order) -> place -> **undo / redo** (`undoSteps`, `redoSteps`, full refund) -> the whole tutorial line -> `acceptOrder` (**`etaAt`** in the future on the loading order) -> `advance('heartbeat')` / `advance('order_due')` (version unchanged) -> wait for `etaAt + 1 s`, `advance('order_due')`: shipped, paid -> leaderboard x4 tabs (own row `isMe`, `universities`) -> `visit` (no wallet, unknown id 404) -> `seasonSummary` -> lead (`age_required`, `consent_required`, `validation_error`, ok, `getLead.createdAt` ms epoch, `lead_already_exists`) -> quiz (batch score, `unknown_question`, 409 `quiz_already_completed`) -> `track` x120 (3 batches) -> `revokeLead` (twice) |
+| `scenarios/retries.test.ts` | stale version -> `409` -> `GET /api/factory/me` -> one re-send with a new key; `undo`/`redo` never re-sent after a 409 (`version_conflict` + fresh snapshot); `advance`/`sync`/`buildEnd` never 409; rejected command keeps the version; **lost response** (the server executes the command, the client sees a network error): same key + same version re-sent, `replayed: true`, applied once; and again when another tab moved the factory during the pause; dead backend -> `network` |
+| `test_s10_transport.py` | raw httpx, no client: preflight (`Origin` of the Vite dev server) for 11 routes answers 200 without auth, allows `Content-Type, X-Dev-User, X-Telegram-Init-Data` and the method, is never rate limited; foreign origin gets no CORS headers; CORS + `Expose-Headers: Retry-After, X-Request-ID` on 200, 401, 404, 409 (`details.version`), 422, **429** (numeric `Retry-After`) and, with `E2E_DOCKER=1`, **503** `sim_unavailable` (stops/starts the sim); `X-Dev-User` == `Authorization: dev` (same player), garbage ids 401, **empty `X-Telegram-Init-Data` -> 401 `unauthorized`** (not rescued by a dev header), garbage initData 401/503; signed initData (valid / tampered / expired / `Authorization: tma`) when `BOT_TOKEN` is in `.env` or `E2E_BOT_TOKEN` (skipped otherwise) |
+
+`test_s10_client.py` is the pytest wrapper: it runs `npx vitest`-equivalent (`node node_modules/vitest/vitest.mjs run`) and fails with the tail of the
+output; it skips with a clear message when node/npm are missing or `npm ci` cannot run (offline). Full run is about 60 s (the tutorial shipment).
+
+**Known deviation kept visible** (`it.fails` in `journey.test.ts`): after `revokeLead()` the server keeps the revoked row and `GET /api/leads/me` still
+returns it, while the client (fakeApi, MockGameApi, `LeadForm.svelte`: "анкета удалена") expects `getLead()` to be `null`. The step flips to red when
+the server returns 404 `lead_not_found` for a revoked lead - then turn it into a plain `it()`.
+
+**Drift check** (`E2E_MUTATE`): `scenarios/setup.ts` can rename keys, at any depth, in every JSON answer before the client sees it, a stand-in for "the server
+renamed a field": `cd client && E2E_ORDER_WAIT_S=0 E2E_MUTATE=etaAt:eta_at npx vitest run`. Tried on the live stack: `etaAt:eta_at` -> `acceptOrder` step red
+("Order.etaAt on a loading order"); `createdAt:made_at` -> bootstrap + lead steps red (`LeadInfo.createdAt` 0); `score:points` -> quiz step red;
+`version:rev` -> 12 of 20 tests red (every 409 / version step). Unmutated: 20 of 20 green.

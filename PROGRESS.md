@@ -5,7 +5,7 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 ## Done
 - Repo scaffold, frontend pinned as submodule vendor/frontend (dde6cbf).
 - S0 done: compose (caddy api db migrate redis sim bot + pgbouncer/sim-replicas profiles), health/ready, initData + dev auth, errors, request id, JSON logs, Redis rate limiter, generated contract (28 cmds), sim service. Tests: api 125, sim 55, contract 212, bot 19.
-- S2 done: GET /api/bootstrap, POST /api/command (row lock, 409, idempotency deque in state.meta + Redis), POST /api/advance, GET /api/factory/me (degraded), buildEnd no-op, sim reason codes, shift limit in state + max(now,lastTick) guard, background offline report accumulation, clients/web/HttpGameApi.ts, e2e S2 acceptance (9/9). Tests: api 257 (with SIM_URL), sim 86, contract 212, e2e 9.
+- S2 done: GET /api/bootstrap, POST /api/command (row lock, 409, idempotency deque in state.meta + Redis), POST /api/advance, GET /api/factory/me (degraded), buildEnd no-op, sim reason codes, shift limit in state + max(now,lastTick) guard, background offline report accumulation, e2e S2 acceptance (9/9). Tests: api 257 (with SIM_URL), sim 86, contract 212, e2e 9.
 - S3 done: submitShift rules (api/app/shift.py), shifts log table, features.undo from sim health, 150 KB state warning + audit test (24 KB today). Tests: api 396, sim 87, e2e 9.
 - S4 part A done: leaderboard (tabs, Redis 20 s cache, me/gapTo51), factory/{playerId}, season/summary, real snapshot.rank, bot seed (`docker compose exec api python -m app.seed_bots`), speed_bph measured from produced delta. Tests: api 434, e2e 18.
 - S4 part B done: server season rotation + season_results, state.season alignment, /internal/* (X-Internal-Token), bot APScheduler jobs (rotate 1 min, top-200 advance 12 min, bots grow 10 min).
@@ -29,8 +29,14 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - Integration S8 done: X-Telegram-Init-Data / X-Dev-User auth, CORS (CORS_ORIGINS), advance heartbeat/order_due, 409 details.version, ?start_param=, features quiz/leads, top-level toast/rewards/snapshot.
 - Integration S9 done: client LeadForm shape (aliases, department ids, institution_kind, migration 0008), LeadInfo with ms createdAt, one quiz bank generated from vendor quiz.ts (scripts/gen_quiz_bank.py --check), client quiz response.
 - Integration S11+S12 done: submodule at frontend main 422b6fc, contract regenerated (27 commands, tick -> 422), sim on $lib/core (migrateState v1->v2, undo/redo live, etaAt, features.undo/serverOrderEta true), 150 KB audit enforced (31 KB).
-- Tests now: api 783 (SIM_URL), sim 103, contract 200, bot 99, e2e 210.
+- Integration S10 done: e2e/client runs the REAL vendor HttpGameApi against the live stack (journey + retries, vitest; wrapped by e2e/test_s10_client.py), raw transport test e2e/test_s10_transport.py (preflight, CORS on 200/4xx/429/5xx, both auth headers); clients/web removed, ARCHITECTURE points to vendor/frontend/docs/http-contract.md.
+- Integration S13 done: caddy image = web build (web/Dockerfile, VITE_API_URL=/) + proxy on one origin (SPA fallback, /internal 404, WEBAPP_URL=https://$DOMAIN/); POST /api/events partial accept ({accepted, rejected}, limit 10+burst 6); users.is_test / factories.is_test (migration 0009; dev name `e2e*` or tg_id >= 10^12) excluded from top, ranks, season results, HR queries, reminders, lead cards; `python -m app.purge_test_users`; README/ARCHITECTURE refreshed, S1/S1U no longer pending.
+- Tests now: api 808 (SIM_URL), sim 103, contract 200, bot 104, e2e 245 (+6 skipped).
 
 ## Next
-- S10: contract test with the real vendor HttpGameApi against the live stack; retire clients/web; align ARCHITECTURE to http-contract.md.
-- S13: Caddy serves the web build, events accept known/drop unknown, mark/exclude e2e test users, README/PROGRESS/ARCHITECTURE refresh, events limit vs client 12/min.
+- Live Telegram demo run on a real domain with BOT_TOKEN (manual checklist in README "Demo in Telegram"); run `python -m app.purge_test_users` first.
+
+## Open after S10/S13 (small)
+- GET /api/leads/me returns the revoked lead (200); frontend fakeApi/MockGameApi expect 404 after DELETE (and allow a new submit). Recorded as it.fails in e2e/client/scenarios/journey.test.ts.
+- e2e/client sends X-Dev-User without a name -> not flagged is_test; use ids >= 10^12 (testusers rule).
+- Dev DB has ~1770 old 'smoke' users not flagged: `docker compose down -v` or flag + purge before the demo.

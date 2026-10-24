@@ -3,7 +3,7 @@
 #   cp .env.example .env
 #   SIM_COMMIT=$(scripts/simcommit.sh) docker compose up -d --build
 #
-# Services: caddy (TLS + reverse proxy), api, db, migrate (one-shot), redis, sim, bot.
+# Services: caddy (TLS + reverse proxy + web build), api, db, migrate (one-shot), redis, sim, bot.
 # Optional profiles:
 #   pgbouncer     transaction pooling in front of db. Also set in .env:  DB_HOST=pgbouncer DB_PORT=6432 PGBOUNCER=1
 #   sim-replicas  a second sim container aliased to `sim` (Docker DNS round-robin; the API's SIM_URL stays http://sim:8080)
@@ -65,8 +65,13 @@ x-sim: &sim
   logging: *logging
 
 services:
+  # caddy = TLS + reverse proxy + the Mini App web build (web/Dockerfile: SvelteKit adapter-static built from
+  # vendor/frontend/web with VITE_API_URL=/, copied to /srv), so the app and the API share one origin.
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: . # repo root: the image bundles vendor/frontend/web (web/Dockerfile.dockerignore)
+      dockerfile: web/Dockerfile
+    image: mosprom-caddy:${WEB_TAG:-dev}
     restart: unless-stopped
     mem_limit: 256m
     ports:

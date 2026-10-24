@@ -52,7 +52,7 @@ async def test_accepts_a_batch_and_stores_it(engage):
     await engage.db.execute("UPDATE users SET source = 'uni_mirea'")
     batch = [ev("app_open"), ev("game_end", result="win", duration_ms=5400, difficulty=1.5), ev("lead_submit", role="lab")]
     r = await post(engage, batch)
-    assert r.status_code == 200 and r.json() == {"accepted": 3}
+    assert r.status_code == 200 and r.json() == {"accepted": 3, "rejected": 0}
     rows = await stored(engage)
     assert [x["name"] for x in rows] == ["app_open", "game_end", "lead_submit"]
     assert rows[1]["props"] == {"result": "win", "duration_ms": 5400, "difficulty": 1.5} and rows[0]["props"] == {}
@@ -68,8 +68,8 @@ async def test_every_whitelisted_name_is_accepted(engage):
 
 
 async def test_exactly_50_events_and_the_empty_batch(engage):
-    assert (await post(engage, [ev() for _ in range(50)])).json() == {"accepted": 50}
-    assert (await post(engage, [])).json() == {"accepted": 0}
+    assert (await post(engage, [ev() for _ in range(50)])).json() == {"accepted": 50, "rejected": 0}
+    assert (await post(engage, [])).json() == {"accepted": 0, "rejected": 0}
     assert await engage.db.fetchval("SELECT count(*) FROM events") == 50
 
 
@@ -77,7 +77,7 @@ async def test_envelopes_and_timestamp_formats(engage):
     iso = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
     r = await engage.post("/api/events", json=[ev(), {"name": "app_open", "ts": iso}, {"name": "app_open"},
                                                 {"name": "app_open", "ts": "2026-01-01T10:00:00"}], headers=dev(1))
-    assert r.json() == {"accepted": 4}  # bare list, ISO string, naive = UTC, missing ts = now
+    assert r.json() == {"accepted": 4, "rejected": 0}  # bare list, ISO string, naive = UTC, missing ts = now
     rows = await stored(engage)
     assert rows[3]["ts"] == datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
     assert abs((rows[2]["ts"] - datetime.now(timezone.utc)).total_seconds()) < 30
@@ -93,7 +93,7 @@ async def test_future_within_the_skew_is_fine(engage):
 
 async def test_unknown_extra_fields_are_ignored(engage):
     e = {**ev(), "session": "abc", "id": 7}
-    assert (await post(engage, [e])).json() == {"accepted": 1}
+    assert (await post(engage, [e])).json() == {"accepted": 1, "rejected": 0}
     assert (await stored(engage))[0]["props"] == {}
 
 
@@ -105,23 +105,51 @@ async def test_too_many_events(engage):
     assert await engage.db.fetchval("SELECT count(*) FROM events") == 0
 
 
+# ---------------------------------------------------------------- S13: partial accept (a bad item never costs the batch)
+
 @pytest.mark.parametrize("name", ["hack", "APP_OPEN", "app_open ", "", None, 5, ["app_open"], "x" * 500])
-async def test_invalid_event_name(engage, name):
-    err = assert_error(await post(engage, [ev(), {"name": name, "ts": now_ms()}]), 422, "invalid_event_name")
-    assert err["details"]["index"] == 1
-    assert await engage.db.fetchval("SELECT count(*) FROM events") == 0  # the valid first event is not kept either
+async def test_unknown_event_name_is_dropped_the_rest_is_kept(engage, name):
+    r = await post(engage, [ev(), {"name": name, "ts": now_ms()}, ev("game_start")])
+    assert r.status_code == 200
+    body = r.json()
+    assert body["accepted"] == 2 and body["rejected"] == 1
+    assert body["rejects"] == [{"index": 1, "reason": "invalid_event_name",
+                                **({"name": name} if isinstance(name, str) and len(name) <= 64 else {})}]
+    assert [x["name"] for x in await stored(engage)] == ["app_open", "game_start"]
 
 
-async def test_missing_name_is_invalid_event_name(engage):
-    assert_error(await post(engage, [{"ts": now_ms()}]), 422, "invalid_event_name")
+async def test_missing_name_and_non_objects_are_dropped(engage):
+    r = await post(engage, [{"ts": now_ms()}, 5, None, "app_open", ev()])
+    assert r.json()["accepted"] == 1 and r.json()["rejected"] == 4
+    assert [x["reason"] for x in r.json()["rejects"]] == ["invalid_event_name", "invalid_event", "invalid_event", "invalid_event"]
+    assert len(await stored(engage)) == 1
 
 
-async def test_future_timestamp(engage):
-    err = assert_error(await post(engage, [ev(), ev("game_start", ts=now_ms(120))]), 422, "future_timestamp")
-    assert err["details"]["index"] == 1 and err["details"]["max_skew_s"] == 60
+async def test_future_timestamp_is_dropped_per_event(engage):
     iso = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
-    assert_error(await engage.post("/api/events", json={"events": [{"name": "app_open", "ts": iso}]}, headers=dev(1)),
-                 422, "future_timestamp")
+    r = await engage.post("/api/events", json={"events": [ev(), ev("game_start", ts=now_ms(120)),
+                                                          {"name": "app_open", "ts": iso}]}, headers=dev(1))
+    body = r.json()
+    assert r.status_code == 200 and body["accepted"] == 1 and body["rejected"] == 2
+    assert [(x["index"], x["reason"]) for x in body["rejects"]] == [(1, "future_timestamp"), (2, "future_timestamp")]
+    assert [x["name"] for x in await stored(engage)] == ["app_open"]
+
+
+@pytest.mark.parametrize("bad, reason", [
+    ({"name": "app_open", "props": [1]}, "invalid_props"), ({"name": "app_open", "props": "x"}, "invalid_props"),
+    ({"name": "app_open", "ts": True}, "invalid_ts"), ({"name": "app_open", "ts": "yesterday"}, "invalid_ts"),
+    ({"name": "app_open", "ts": 12345}, "invalid_ts"), ({"name": "app_open", "ts": [1]}, "invalid_ts"),
+    ({"name": "app_open", "props": {"blob": "x" * 5000}}, "props_too_large"),
+])
+async def test_bad_ts_and_props_are_dropped_per_event(engage, bad, reason):
+    r = await post(engage, [ev(), bad])
+    assert r.status_code == 200 and r.json()["accepted"] == 1 and r.json()["rejects"][0]["reason"] == reason
+    assert len(await stored(engage)) == 1
+
+
+async def test_everything_rejected_is_still_a_200(engage):
+    r = await post(engage, [ev("nope"), ev("nope2")])
+    assert r.status_code == 200 and r.json()["accepted"] == 0 and r.json()["rejected"] == 2
     assert await engage.db.fetchval("SELECT count(*) FROM events") == 0
 
 
@@ -130,16 +158,12 @@ async def test_future_boundary_uses_the_clock(engage, monkeypatch):
     monkeypatch.setattr(events_mod, "utcnow", lambda: fixed)
     ms = int(fixed.timestamp() * 1000)
     assert (await post(engage, [ev(ts=ms + 60_000)])).status_code == 200  # exactly 60 s ahead
-    assert_error(await post(engage, [ev(ts=ms + 60_001)]), 422, "future_timestamp")
+    r = await post(engage, [ev(ts=ms + 60_001)])
+    assert r.status_code == 200 and r.json()["accepted"] == 0 and r.json()["rejects"][0]["reason"] == "future_timestamp"
 
 
 @pytest.mark.parametrize("body", [
     {"events": "app_open"}, {"events": {"name": "app_open"}}, {"nope": []}, "app_open", 5, None,
-    {"events": [5]}, {"events": [None]}, {"events": [{"name": "app_open", "props": [1]}]},
-    {"events": [{"name": "app_open", "props": "x"}]},
-    {"events": [{"name": "app_open", "ts": True}]}, {"events": [{"name": "app_open", "ts": "yesterday"}]},
-    {"events": [{"name": "app_open", "ts": 12345}]}, {"events": [{"name": "app_open", "ts": [1]}]},
-    {"events": [{"name": "app_open", "props": {"blob": "x" * 5000}}]},
 ])
 async def test_validation_errors(engage, body):
     assert_error(await engage.post("/api/events", json=body, headers=dev(1)), 422, "validation_error")
@@ -171,24 +195,26 @@ async def test_401(engage):
     assert_error(await engage.post("/api/events", json={"events": [ev()]}), 401, "unauthorized")
 
 
-async def test_429_after_10_batches_a_minute(engage_factory):
+async def test_429_after_16_batches_a_minute(engage_factory):
+    """10/min + burst 6: the web client flushes every 5 s (12/min) and once more when the tab hides."""
     c = await engage_factory(rate_limit_enabled=True)
-    for i in range(10):
+    for i in range(16):
         assert (await post(c, [ev()])).status_code == 200, i
     r = await post(c, [ev()])
     err = assert_error(r, 429, "rate_limited")
-    assert int(r.headers["retry-after"]) >= 1 and err["details"]["limit"] == 10
+    assert int(r.headers["retry-after"]) >= 1 and err["details"]["limit"] == 16
     assert (await post(c, [ev()], tg=2)).status_code == 200
-    assert await c.db.fetchval("SELECT count(*) FROM events") == 11
+    assert await c.db.fetchval("SELECT count(*) FROM events") == 17
 
 
 async def test_bots_never_produce_events(engage):
     await engage.get("/api/me", headers=dev(5))
     await engage.db.execute("UPDATE users SET is_bot = true WHERE tg_id = 5")
-    assert (await post(engage, [ev()], tg=5)).json() == {"accepted": 0}
-    assert (await post(engage, [ev("nope")], tg=5)).status_code == 422  # still validated like anybody else
+    assert (await post(engage, [ev()], tg=5)).json() == {"accepted": 0, "rejected": 0}
+    r = await post(engage, [ev("nope")], tg=5)  # still validated like anybody else
+    assert r.json()["accepted"] == 0 and r.json()["rejected"] == 1
     assert await engage.db.fetchval("SELECT count(*) FROM events") == 0
-    assert (await post(engage, [ev()], tg=6)).json() == {"accepted": 1}
+    assert (await post(engage, [ev()], tg=6)).json() == {"accepted": 1, "rejected": 0}
 
 
 async def test_500_is_the_unified_error(engage, monkeypatch):
@@ -203,6 +229,6 @@ async def test_500_is_the_unified_error(engage, monkeypatch):
 async def test_insert_failure_stores_nothing(engage, monkeypatch):
     """A failing write rolls the whole batch back (one transaction): the 2nd row violates NOT NULL."""
     rows = lambda p, n: [{"name": "app_open", "props": {}, "ts": n}, {"name": None, "props": {}, "ts": n}]  # noqa: E731
-    monkeypatch.setattr(events_mod, "parse_batch", rows)
+    monkeypatch.setattr(events_mod, "parse_batch", lambda p, n: (rows(p, n), []))
     assert_error(await post(engage, [ev()]), 500, "internal_error")
     assert await engage.db.fetchval("SELECT count(*) FROM events") == 0

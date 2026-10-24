@@ -168,15 +168,9 @@ def test_demo_path_end_to_end(api: SmokeApi):
     assert abs(general["place"] - snap["rank"]["place"]) <= 5  # bots may grow between the two reads
     if shipped:
         assert lbs["quality"]["me"]["value"] > 0
-        if general["place"] <= 100:  # the top-100 is cached for 20 s: the row shows up within one TTL
-            deadline = time.monotonic() + 25
-            while True:
-                rows = api.http.get("/api/season/leaderboard", params={"tab": "general"}).json()["rows"]
-                mine = [x for x in rows if x["playerId"] == pid]
-                if mine or time.monotonic() > deadline:
-                    break
-                time.sleep(3)
-            assert mine and mine[0]["isMe"] is True, "player with stars is not in the cached top-100 after 25 s"
+        # S13: the e2e player is a test user (users.is_test): ranked in `me`, but never listed in the shared top
+        rows = api.http.get("/api/season/leaderboard", params={"tab": "general", "limit": 100}).json()["rows"]
+        assert not [x for x in rows if x["playerId"] == pid], "a test player must not be listed in the top"
 
     # season summary
     s = api.http.get("/api/season/summary").json()
@@ -211,7 +205,7 @@ def test_demo_path_end_to_end(api: SmokeApi):
     mine = api.http.get("/api/leads/me").json()
     assert mine["id"] == lead["id"] and "hrNote" not in mine and mine["consentRevokedAt"] is None
     assert api.http.get("/api/season/summary").json()["leadStatus"] == "new"
-    assert api.http.post("/api/events", json={"events": [ev(), ev("game_end", result="win", duration_ms=4200)]}).json() == {"accepted": 2}
+    assert api.http.post("/api/events", json={"events": [ev(), ev("game_end", result="win", duration_ms=4200)]}).json() == {"accepted": 2, "rejected": 0}
     assert api.http.delete("/api/leads/me").status_code == 204
     assert api.http.get("/api/leads/me").json()["consentRevokedAt"] is not None
     assert api.http.get("/api/season/summary").json()["leadStatus"] == "revoked"
@@ -679,13 +673,8 @@ def test_advance_bad_bodies(api: SmokeApi, body):
     ("/api/quiz/answer", dict(json=[{"questionId": "q\u0000", "answer": 0}]), "validation_error"),
     ("/api/quiz/answer", dict(content=b"\xff\xfe", headers=J), "validation_error"),
     ("/api/events", dict(json={"events": [{"name": "a\u0000"}]}), "validation_error"),
-    ("/api/events", dict(json={"events": [{"name": "app_open", "ts": 10**30}]}), "validation_error"),
-    ("/api/events", dict(json={"events": [{"name": "app_open", "ts": -5}]}), "validation_error"),
-    ("/api/events", dict(json={"events": [{"name": "app_open", "ts": "garbage"}]}), "validation_error"),
     ("/api/events", dict(json={"events": [{"name": "app_open", "props": {"a": "x\u0000"}}]}), "validation_error"),
-    ("/api/events", dict(json={"events": [{"name": "app_open", "props": {"a": "x" * 5000}}]}), "validation_error"),
     ("/api/events", dict(json={"events": "app_open"}), "validation_error"),
-    ("/api/events", dict(json={"events": [{"name": "hack"}]}), "invalid_event_name"),
     ("/api/events", dict(json={"events": [{"name": "app_open"}] * 51}), "too_many_events"),
     ("/api/events", dict(content=("[" * 5000 + "]" * 5000).encode(), headers=J), "validation_error"),
     ("/api/events", dict(content=b"\xff\xfe", headers=J), "validation_error"),
@@ -707,6 +696,18 @@ def test_other_endpoints_bad_bodies(api: SmokeApi, path: str, kwargs: dict, code
         assert api.http.get("/api/leads/me").status_code == 404, "a rejected lead must not be stored"
     if path == "/api/quiz/answer":
         assert api.http.get("/api/quiz/questions").json()["progress"]["answered"] == 0, "answers are all-or-nothing"
+
+
+@pytest.mark.parametrize("bad, reason", [
+    ({"name": "hack"}, "invalid_event_name"), ({"name": "app_open", "ts": -5}, "invalid_ts"),
+    ({"name": "app_open", "ts": "garbage"}, "invalid_ts"), ({"name": "app_open", "ts": 10**30}, "invalid_ts"),
+    ({"name": "app_open", "props": {"a": "x" * 5000}}, "props_too_large"),
+])
+def test_events_drop_a_bad_item_and_keep_the_rest(api: SmokeApi, bad: dict, reason: str):
+    """S13: the client throws a batch away on any 4xx, so a single bad item is dropped (200 + rejected), not fatal."""
+    r = api.http.post("/api/events", json={"events": [ev(), bad]})
+    assert r.status_code == 200, r.text
+    assert (r.json()["accepted"], r.json()["rejected"], r.json()["rejects"][0]["reason"]) == (1, 1, reason)
 
 
 @pytest.mark.parametrize("header,status,code", [

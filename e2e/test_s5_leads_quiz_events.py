@@ -221,19 +221,22 @@ def test_quiz_flow_and_summary(api: Api):
 
 def test_events_batch_and_errors(api: Api):
     api.bootstrap()
-    assert post(api, "/api/events", {"events": [ev(), ev("game_end", result="win", duration_ms=4200)]}).json() == {"accepted": 2}
+    assert post(api, "/api/events", {"events": [ev(), ev("game_end", result="win", duration_ms=4200)]}).json() == {"accepted": 2, "rejected": 0}
     uid = uid_of(api)
     assert sql(f"SELECT count(*) FROM events WHERE user_id = {uid}") == "2"
     assert sql(f"SELECT props->>'result' FROM events WHERE user_id = {uid} AND name = 'game_end'") == "win"
-    assert err(post(api, "/api/events", {"events": [ev("hack")]}))["code"] == "invalid_event_name"
-    assert err(post(api, "/api/events", {"events": [ev(ts=now_ms(300))]}))["code"] == "future_timestamp"
+    # S13: a bad item is dropped, the rest of the batch is kept (the web client throws a batch away on any 4xx)
+    r = post(api, "/api/events", {"events": [ev(), ev("hack"), ev(ts=now_ms(300))]})
+    assert r.status_code == 200 and (r.json()["accepted"], r.json()["rejected"]) == (1, 2)
+    assert [x["reason"] for x in r.json()["rejects"]] == ["invalid_event_name", "future_timestamp"]
     assert err(post(api, "/api/events", {"events": [ev() for _ in range(51)]}))["code"] == "too_many_events"
-    assert post(api, "/api/events", {"events": [ev() for _ in range(50)]}).json() == {"accepted": 50}
-    assert sql(f"SELECT count(*) FROM events WHERE user_id = {uid}") == "52"  # rejected batches stored nothing
+    assert post(api, "/api/events", {"events": [ev() for _ in range(50)]}).json() == {"accepted": 50, "rejected": 0}
+    assert sql(f"SELECT count(*) FROM events WHERE user_id = {uid}") == "53"  # the 51-event batch stored nothing; dropped items were not stored
 
 
-def test_events_rate_limit_is_10_batches_per_minute(api: Api):
-    for _ in range(10):
+def test_events_rate_limit_fits_the_clients_5_second_flush(api: Api):
+    """10/min + burst 6 = 16 per minute window; the client flushes 12/min."""
+    for _ in range(16):
         assert post(api, "/api/events", {"events": [ev()]}).status_code == 200
     r = post(api, "/api/events", {"events": [ev()]})
     assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited" and int(r.headers["Retry-After"]) >= 1
@@ -298,7 +301,7 @@ def test_lead_quiz_events_with_sim_stopped(api: Api, sim_stopped):
     q = post(api, "/api/quiz/answer", [{"question_id": "q_year", "answer": CORRECT["q_year"]}])
     assert q.status_code == 200 and q.json()["correct"] == 1 and q.json()["score"] == 100
     assert api.http.get("/api/quiz/questions").status_code == 200
-    assert post(api, "/api/events", {"events": [ev("lead_submit", role="lab")]}).json() == {"accepted": 1}
+    assert post(api, "/api/events", {"events": [ev("lead_submit", role="lab")]}).json()["accepted"] == 1
     assert sql(f"SELECT count(*) FROM events WHERE user_id = {uid}") == "1"
     assert api.http.delete("/api/leads/me").status_code == 204
     assert api.http.delete("/api/leads/me").status_code == 204

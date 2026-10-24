@@ -1,4 +1,5 @@
-# Caddy terminates TLS (automatic HTTPS via Let's Encrypt for a real DOMAIN) and proxies the API.
+# Caddy terminates TLS (automatic HTTPS via Let's Encrypt for a real DOMAIN), proxies the API and serves the Mini App
+# web build (/srv, copied in by web/Dockerfile) on the SAME origin: the client calls relative /api/*, prod needs no CORS.
 #
 #   DOMAIN=game.example.com   public domain: ports 80/443 must reach this host, DNS A record must point here
 #   DOMAIN=localhost          local dev: Caddy issues a cert from its own internal CA (curl -k https://localhost/health)
@@ -39,8 +40,16 @@
 		}
 	}
 
-	# The Mini App web build is not served from this stack (yet).
+	# Mini App web build (SvelteKit adapter-static, built by web/Dockerfile with VITE_API_URL=/): static files first, then
+	# `<path>.html` (prerendered /landing), then the SPA fallback index.html for client-side routes (/play, /privacy, ...).
+	# /api, /health, /ready and /internal were handled above, so an unknown /api/x is the api's own JSON 404.
 	handle {
-		respond "mosprom api" 404
+		root * /srv
+		@immutable path /_app/immutable/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		@pages not path /_app/immutable/* /fonts/* /audio/* /icons/* /labels/* /landing/*
+		header @pages Cache-Control "no-cache"
+		try_files {path} {path}.html /index.html
+		file_server
 	}
 }

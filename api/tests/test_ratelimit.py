@@ -18,6 +18,7 @@ def test_limit_table_matches_spec():
     per_min = {name: lim.limit for name, lim in LIMITS.items()}
     assert per_min["bootstrap"] == 10 and per_min["factory_me"] == 60 and per_min["command"] == 120
     assert per_min["advance"] == 10 and per_min["leaderboard"] == 60 and per_min["events"] == 10
+    assert LIMITS["events"].max_requests >= 13  # the client flushes every 5 s = 12/min (S13)
     assert per_min["leads"] == 5 and per_min["quiz"] == 30
     assert all(lim.window_s == 60 for lim in LIMITS.values())
     assert LIMITS["command"].burst > 0  # "small burst"

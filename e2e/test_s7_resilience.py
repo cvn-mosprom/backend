@@ -63,7 +63,7 @@ def shape(snapshot: dict) -> dict:
 
 @pytest.fixture
 def player():
-    a = Api(TG_ID, "s7")  # "Authorization: dev 777001:s7"
+    a = Api(TG_ID, "e2e-s7")  # "Authorization: dev 777001:e2e-s7" (the "e2e" prefix marks a test user: not in the top)
     wait_ready()
     body = a.bootstrap()
     if body["snapshot"]["factory"]["name"] != NAME:  # first run: give the factory something to lose

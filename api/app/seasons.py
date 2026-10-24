@@ -2,7 +2,7 @@
 
 Seasons are global and live in the `seasons` table. The rules mirror the game core (vendor/frontend lib/core/core.ts, `rollSeason`):
   * a season is closed when `now >= ends_at` (`closed=true`, `closed_at`), and its final standings are frozen into
-    `season_results` (general ranking: stars desc, user id asc; bots only while BOTS_ENABLED);
+    `season_results` (general ranking: stars desc, user id asc; bots only while BOTS_ENABLED, test users never);
   * the next season opens SEASON_ROLL_H hours after `ends_at` (the core: `now - endsAt >= SEASON_ROLL_H * H`), starts
     at the moment it is opened and lasts SEASON_DAYS (vendor/frontend content/balance.ts);
   * `rotate()` is idempotent and race-safe (pg_advisory_xact_lock + re-check under the lock). It never locks factory
@@ -80,7 +80,8 @@ def roll_overdue(season: Season, now_ms: int) -> bool:
 async def _freeze(session: AsyncSession, season_id: int, bots_enabled: bool) -> None:
     place = func.row_number().over(order_by=(Factory.stars.desc(), Factory.user_id.asc()))
     sel = select(literal(season_id), Factory.user_id, place, Factory.stars, Factory.quality_avg, Factory.speed_bph,
-                 Factory.bottles_season, Factory.is_bot).where(Factory.season_id == season_id)
+                 Factory.bottles_season, Factory.is_bot).where(Factory.season_id == season_id,
+                                                                 Factory.is_test.is_(False))
     if not bots_enabled:  # hidden everywhere (rows, places, totals): the frozen table follows
         sel = sel.where(Factory.is_bot.is_(False))
     await session.execute(pg_insert(SeasonResult).from_select(

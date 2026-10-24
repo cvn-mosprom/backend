@@ -83,7 +83,7 @@ async def opted_in_page(sm: SessionMaker, after_id: int = 0, limit: int = 200) -
             "SELECT u.id, u.tg_id, f.snapshot -> 'orders' AS orders "
             "FROM users u JOIN factories f ON f.user_id = u.id "
             "WHERE u.id > :after AND u.notify_opt_in AND u.bot_started_at IS NOT NULL "
-            "AND NOT u.is_bot AND u.tg_id > 0 AND NOT f.is_bot "
+            "AND NOT u.is_bot AND NOT u.is_test AND u.tg_id > 0 AND NOT f.is_bot "
             "AND f.snapshot IS NOT NULL AND jsonb_typeof(f.snapshot -> 'orders') = 'array' "
             "ORDER BY u.id LIMIT :lim"), {"after": after_id, "lim": limit})).all()
     out = []

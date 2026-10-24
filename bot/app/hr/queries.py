@@ -1,6 +1,6 @@
 """Read-only HR analytics queries (plus the lead status update) as plain SQL over the api's tables.
 
-Rules shared by every query: demo bots (``users.is_bot``) are excluded; a lead whose consent was revoked
+Rules shared by every query: demo bots (``users.is_bot``) and test users (``users.is_test``, S13) are excluded; a lead whose consent was revoked
 (``consent_revoked_at``) is excluded from the active views and the export. The current season is the newest row of
 ``seasons`` (the same definition the api uses). Nothing here reads ``factories.state``.
 """
@@ -84,7 +84,7 @@ def like_pattern(s: str) -> str:
 
 
 def _lead_where(f: LeadFilter, *, revoked_ok: bool) -> tuple[str, dict[str, Any]]:
-    conds, params = ["u.is_bot = false"], {}
+    conds, params = ["u.is_bot = false AND u.is_test = false"], {}
     if not (revoked_ok and f.include_revoked):
         conds.append("l.consent_revoked_at IS NULL")
     if f.status:
@@ -221,16 +221,16 @@ async def funnel(s: AsyncSession, season: dict[str, Any]) -> dict[str, Any]:
     names = [n for n, _ in FUNNEL_STEPS]
     ev = (await s.execute(text(
         "SELECT e.name, count(DISTINCT e.user_id) AS n FROM events e JOIN users u ON u.id = e.user_id "
-        "WHERE u.is_bot = false AND e.name = ANY(CAST(:names AS text[])) AND e.ts >= :since GROUP BY e.name"),
+        "WHERE u.is_bot = false AND u.is_test = false AND e.name = ANY(CAST(:names AS text[])) AND e.ts >= :since GROUP BY e.name"),
         {"names": names, "since": season["starts_at"]})).all()
     by = {r.name: int(r.n) for r in ev}
     tbl = (await s.execute(text("""
         SELECT
-          (SELECT count(*) FROM factories f JOIN users u ON u.id = f.user_id WHERE f.season_id = :sid AND u.is_bot = false) AS players,
-          (SELECT count(*) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE sh.season_id = :sid AND u.is_bot = false) AS shifts,
-          (SELECT count(DISTINCT sh.user_id) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE sh.season_id = :sid AND u.is_bot = false) AS shift_players,
-          (SELECT count(*) FROM leads l JOIN users u ON u.id = l.user_id WHERE l.season_id = :sid AND u.is_bot = false AND l.consent_revoked_at IS NULL) AS leads,
-          (SELECT count(*) FROM leads l JOIN users u ON u.id = l.user_id WHERE l.season_id = :sid AND u.is_bot = false AND l.consent_revoked_at IS NOT NULL) AS revoked
+          (SELECT count(*) FROM factories f JOIN users u ON u.id = f.user_id WHERE f.season_id = :sid AND u.is_bot = false AND u.is_test = false) AS players,
+          (SELECT count(*) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE sh.season_id = :sid AND u.is_bot = false AND u.is_test = false) AS shifts,
+          (SELECT count(DISTINCT sh.user_id) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE sh.season_id = :sid AND u.is_bot = false AND u.is_test = false) AS shift_players,
+          (SELECT count(*) FROM leads l JOIN users u ON u.id = l.user_id WHERE l.season_id = :sid AND u.is_bot = false AND u.is_test = false AND l.consent_revoked_at IS NULL) AS leads,
+          (SELECT count(*) FROM leads l JOIN users u ON u.id = l.user_id WHERE l.season_id = :sid AND u.is_bot = false AND u.is_test = false AND l.consent_revoked_at IS NOT NULL) AS revoked
         """), {"sid": season["id"]})).mappings().one()
     return {"steps": [(n, label, by.get(n, 0)) for n, label in FUNNEL_STEPS], "tables": dict(tbl)}
 
@@ -239,7 +239,7 @@ async def sources(s: AsyncSession, limit: int = 30) -> list[dict[str, Any]]:
     rows = (await s.execute(text("""
         SELECT coalesce(nullif(u.source, ''), '(без метки)') AS src, count(*) AS users,
                count(*) FILTER (WHERE EXISTS (SELECT 1 FROM leads l WHERE l.user_id = u.id AND l.consent_revoked_at IS NULL)) AS leads
-        FROM users u WHERE u.is_bot = false GROUP BY 1 ORDER BY users DESC, src LIMIT :n"""), {"n": limit})).mappings().all()
+        FROM users u WHERE u.is_bot = false AND u.is_test = false GROUP BY 1 ORDER BY users DESC, src LIMIT :n"""), {"n": limit})).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -253,34 +253,34 @@ async def stats(s: AsyncSession, quiz_total: int, now: datetime | None = None,
     since = _today_start(now)
     row = (await s.execute(text("""
         SELECT
-          (SELECT count(*) FROM users WHERE is_bot = false) AS users,
-          (SELECT count(*) FROM users WHERE is_bot = false AND created_at >= :since) AS new_today,
-          (SELECT count(*) FROM users WHERE is_bot = false AND last_seen_at >= :since) AS dau,
-          (SELECT count(*) FROM factories f JOIN users u ON u.id = f.user_id WHERE u.is_bot = false) AS factories,
-          (SELECT count(*) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE u.is_bot = false AND sh.created_at >= :since) AS shifts_today,
+          (SELECT count(*) FROM users WHERE is_bot = false AND is_test = false) AS users,
+          (SELECT count(*) FROM users WHERE is_bot = false AND is_test = false AND created_at >= :since) AS new_today,
+          (SELECT count(*) FROM users WHERE is_bot = false AND is_test = false AND last_seen_at >= :since) AS dau,
+          (SELECT count(*) FROM factories f JOIN users u ON u.id = f.user_id WHERE u.is_bot = false AND u.is_test = false) AS factories,
+          (SELECT count(*) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE u.is_bot = false AND u.is_test = false AND sh.created_at >= :since) AS shifts_today,
           (SELECT count(DISTINCT qa.user_id) FROM quiz_answers qa JOIN users u ON u.id = qa.user_id
-             WHERE u.is_bot = false AND qa.question_id = ANY(CAST(:ids AS text[]))) AS quiz_started
+             WHERE u.is_bot = false AND u.is_test = false AND qa.question_id = ANY(CAST(:ids AS text[]))) AS quiz_started
         """), {"since": since, "ids": list(quiz_ids)})).mappings().one()
     out = dict(row)
     quiz = (await s.execute(text("""
         SELECT count(*) AS completed, coalesce(avg(sc), 0) AS avg_score FROM (
           SELECT qa.user_id, count(*) FILTER (WHERE qa.correct) AS sc, count(*) AS n
           FROM quiz_answers qa JOIN users u ON u.id = qa.user_id
-          WHERE u.is_bot = false AND qa.question_id = ANY(CAST(:ids AS text[])) GROUP BY qa.user_id) t
+          WHERE u.is_bot = false AND u.is_test = false AND qa.question_id = ANY(CAST(:ids AS text[])) GROUP BY qa.user_id) t
         WHERE n >= :total"""), {"total": quiz_total, "ids": list(quiz_ids)})).mappings().one()
     out["quiz_completed"], out["quiz_avg"] = int(quiz["completed"]), float(quiz["avg_score"])
     st = (await s.execute(text(
         "SELECT l.status, count(*) AS n FROM leads l JOIN users u ON u.id = l.user_id "
-        "WHERE u.is_bot = false AND l.consent_revoked_at IS NULL GROUP BY l.status"))).all()
+        "WHERE u.is_bot = false AND u.is_test = false AND l.consent_revoked_at IS NULL GROUP BY l.status"))).all()
     out["leads"] = {r.status: int(r.n) for r in st}
     out["leads_revoked"] = (await s.execute(text(
         "SELECT count(*) FROM leads l JOIN users u ON u.id = l.user_id "
-        "WHERE u.is_bot = false AND l.consent_revoked_at IS NOT NULL"))).scalar_one()
+        "WHERE u.is_bot = false AND u.is_test = false AND l.consent_revoked_at IS NOT NULL"))).scalar_one()
     return out
 
 
 async def top(s: AsyncSession, season_id: int, university: str | None, include_bots: bool, limit: int = 10) -> list[dict[str, Any]]:
-    conds, params = ["f.season_id = :sid"], {"sid": season_id, "n": limit}
+    conds, params = ["f.season_id = :sid", "NOT (f.is_test OR u.is_test)"], {"sid": season_id, "n": limit}  # test users never
     if not include_bots:
         conds.append("NOT (f.is_bot OR u.is_bot)")
     if university:

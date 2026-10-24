@@ -35,7 +35,7 @@ LIMITS: dict[str, Limit] = {
     "command": Limit(120, burst=20),
     "advance": Limit(10, burst=2),  # the web client keeps <= 8/min (heartbeat 30 s + order_due); never below 10/min
     "leaderboard": Limit(60),
-    "events": Limit(10),
+    "events": Limit(10, burst=6),  # the web client flushes every 5 s = 12/min (+ a flush on close): 16 fit
     "leads": Limit(5),
     "quiz": Limit(30),
     "default": Limit(60),

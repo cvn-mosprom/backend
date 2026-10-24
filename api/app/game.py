@@ -341,7 +341,7 @@ class GameService:
             season = await seasons.ensure(session, wall, bots_enabled=self.bots_enabled)
             await session.execute(  # race-safe create-on-first-call; a rollback below removes the row again
                 pg_insert(Factory).values(user_id=user.id, season_id=season.id, name=player["name"], state={},
-                                          is_bot=user.is_bot)
+                                          is_bot=user.is_bot, is_test=user.is_test)
                 .on_conflict_do_nothing(index_elements=[Factory.user_id]))
             locked = await self._lock(session, user.id)
             if locked.state:
@@ -508,7 +508,8 @@ class GameService:
                 return {"advanced": 0, "skipped": 0, "failed": 0, "ms": 0, "sim_down": False, "pending": 0,
                         "season_id": season.id if season else None, "season_open": False}
             ids = list((await session.execute(
-                select(Factory.user_id).where(Factory.season_id == season.id, Factory.is_bot.is_(False))
+                select(Factory.user_id).where(Factory.season_id == season.id, Factory.is_bot.is_(False),
+                                              Factory.is_test.is_(False))
                 .order_by(Factory.stars.desc(), Factory.user_id.asc()).limit(limit))).scalars())
         advanced = skipped = failed = done = 0
         sim_down = False

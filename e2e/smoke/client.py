@@ -18,7 +18,7 @@ from .checks import problems
 class SmokeApi(Api):
     """`Api` whose every response goes through `checks.problems`; violations land in `sink` (shared by all tabs of a test)."""
 
-    def __init__(self, tg_id: int, name: str = "smoke", *, sink: list[str] | None = None, allow_503: bool = False) -> None:
+    def __init__(self, tg_id: int, name: str = "e2e-smoke", *, sink: list[str] | None = None, allow_503: bool = False) -> None:
         super().__init__(tg_id, name)
         self.sink: list[str] = sink if sink is not None else []
         self.allow_503 = allow_503

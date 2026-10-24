@@ -43,6 +43,7 @@ _warned: set[str] = set()
 class DeliveryResult:
     sent: int = 0
     failed: int = 0
+    test_skipped: int = 0  # rows of test users (users.is_test): marked sent, never shown to HR
     skipped: str | None = None  # why nothing was attempted
     errors: list[str] = field(default_factory=list)
 
@@ -76,6 +77,14 @@ async def _send_all(rt: runtime.Runtime, text_: str, markup: Any, chats: list[in
             if isinstance(ra, (int, float)):
                 retry_after = max(retry_after or 0, float(ra))
     return ok, errors, retry_after
+
+
+async def _is_test_user(session: Any, payload: Any) -> bool:
+    """e2e / test players (users.is_test, S13) produce lead rows too; HR must not get their cards."""
+    uid = payload.get("user_id") if isinstance(payload, dict) else None
+    if not isinstance(uid, int) or isinstance(uid, bool):
+        return False
+    return bool((await session.execute(text("SELECT is_test FROM users WHERE id = :id"), {"id": uid})).scalar_one_or_none())
 
 
 async def _render(session: Any, kind: str, payload: dict[str, Any]) -> tuple[str, Any]:
@@ -115,6 +124,11 @@ async def deliver_once(rt: runtime.Runtime, limit: int = BATCH) -> DeliveryResul
                 {"max": MAX_ATTEMPTS, "kinds": list(KINDS), "skip": skip})).first()
             if row is None:
                 break
+            if await _is_test_user(session, row.payload):
+                await session.execute(text("UPDATE outbox SET sent_at = now(), last_error = 'test user: not delivered' "
+                                           "WHERE id = :id"), {"id": row.id})
+                res.test_skipped += 1
+                continue
             text_, markup = await _render(session, row.kind, row.payload or {})
             ok, errors, retry_after = await _send_all(rt, text_, markup, chats)
             err = "; ".join(errors)[:ERROR_MAX] or None

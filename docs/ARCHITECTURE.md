@@ -3,6 +3,11 @@
 The source of truth for the product spec is `docs/spec-rev4.txt` (sprint plan, revision 4).
 This file pins down the interfaces between the parts so they can be built in parallel.
 
+**Client <-> server wire: `vendor/frontend/docs/http-contract.md` is the source of truth** (headers, bodies, error codes, retry/resync rules,
+`Order.etaAt`, `features`), together with `vendor/frontend/web/src/lib/api/types.ts`. The sections below only record how the backend implements it
+(S8-S12 aligned them); where they disagree the contract wins and this file is the one to fix. The seam is enforced by
+`e2e/client` (the real `HttpGameApi` against the live stack) and `e2e/test_s10_transport.py` (raw CORS / auth headers).
+
 ## Repo layout and ownership
 
 ```
@@ -23,8 +28,10 @@ Node: v24 locally, image `node:20-alpine` or newer LTS in Docker. Package manage
 ## Error format (every API error)
 
 ```json
-{"error": {"code": "version_conflict", "message": "human readable", "details": {"current_version": 7}}}
+{"error": {"code": "version_conflict", "message": "human readable", "details": {"version": 7}}}
 ```
+(`details.version` = the current factory version on a 409; `command_rejected` carries `details.reason` and a fresh `snapshot`; the client's
+parsing rules are in http-contract.md "Ошибки".)
 HTTP status by code: 401 unauthorized|invalid_init_data|auth_expired; 403 age_required|consent_required;
 404 *_not_found; 409 version_conflict|lead_already_exists|quiz_already_completed; 422 validation_error|command_rejected|...;
 429 rate_limited (+ `Retry-After` header always); 503 sim_unavailable|db_unavailable|redis_unavailable|config_error; 500 internal_error.
@@ -36,7 +43,7 @@ Every response carries `X-Request-ID` (echo incoming header or generate uuid4).
   (secret = HMAC_SHA256(key="WebAppData", msg=BOT_TOKEN)); `auth_date` older than `INIT_DATA_MAX_AGE_S` (default 86400) -> 401 auth_expired;
   bad hash/format -> 401 invalid_init_data; missing header -> 401 unauthorized. Short Redis cache of verified initData (key = sha256 of raw string, TTL 300 s).
 - Dev: when `DEV_AUTH=1`, header `Authorization: dev <tg_id>[:<name>]` is accepted. Never enabled in prod (`APP_ENV=prod` forces it off).
-- Web client (S8): `X-Telegram-Init-Data: <raw initData>` (same as `tma`) and `X-Dev-User: <tg_id>` (same as `dev`, name `Dev<id>`, dev only).
+- Web client (S8; http-contract.md "Общее" is the source of truth, `e2e/test_s10_transport.py` checks it): `X-Telegram-Init-Data: <raw initData>` (same as `tma`) and `X-Dev-User: <tg_id>` (same as `dev`, name `Dev<id>`, dev only).
   Priority: `Authorization`, then `X-Telegram-Init-Data`, then `X-Dev-User`; the first header present wins. An empty `X-Telegram-Init-Data` -> 401 unauthorized.
 - CORS (S8, `CORSMiddleware`, outermost so that 4xx/429/5xx carry the headers; a preflight never reaches auth / rate limit / timeout):
   origins from `CORS_ORIGINS` (comma-separated); empty -> dev `http://localhost:5173`, prod the origin of `WEBAPP_URL` (else `https://$DOMAIN`).
@@ -90,8 +97,8 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
   `insufficient_funds`, `not_found`, `rejected` (generic fallback; `history_unavailable` / `tick_removed` are gone since S12/S11). API mapping: reasons `daily_limit_exceeded`,
   `minigame_too_short`, `impossible_score` become the top-level error code (422); everything else is 422 `command_rejected`
   with `details.reason`. Details always include `message`, `version` and the fresh `snapshot`.
-- **POST /api/command** body `{version:int, idempotency_key:str(8..64), cmd:Command}`; success 200
-  `{ok:true, version, result:{toast?, rewards?}, events:[], snapshot, replayed:false}`.
+- **POST /api/command** (http-contract.md "POST /api/command") body `{version:int, idempotency_key:str(8..64), cmd:Command}`; success 200
+  `{ok:true, version, result:{toast?, rewards?}, events:[], snapshot, replayed:false}` (`toast` / `rewards` are also copied to the top level, where the client reads them).
   Replay (same key): 200 with the stored short result, current version, fresh snapshot, `replayed:true` — checked BEFORE the
   version check. Keys live in `state.meta.idempotency` (deque, last 50: `{key, ok, code?, version, result, at}`), written in the
   same transaction as the state; Redis `idem:{user_id}:{key}` TTL 600 s is only a fast-path cache.
@@ -106,7 +113,8 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
   `/health.historyInState` = true and `serverOrderEta` = true (`Order.etaAt` is set by the core on every loading order whose line can finish it).
 - **GET /api/factory/me:** catch-up under lock, `{version, serverTime, snapshot, degraded:false}`; sim down -> last stored snapshot
   (`factories.snapshot` JSONB column) with `degraded:true` (200).
-- **POST /api/advance** body `{cap_hours: 0..8 (default 8), reason: "resume"|"manual"|"background"}` -> `{version, serverTime, advancedMs, snapshot}`.
+- **POST /api/advance** (http-contract.md "POST /api/advance") body `{cap_hours: 0..8 (default 8), reason: "order_due"|"heartbeat"}` (the client's reasons; `resume|manual|background` stay
+  accepted, and `heartbeat` / `order_due` reach the sim as `manual`) -> `{version, serverTime, advancedMs, snapshot}`. No version check, never 409, limit 10/min.
 - **Shift limit:** the counter lives in the factory state (top-level `state.shiftsLeft` / `shiftsDay` (MSK day) since schema v2, before S12
   `state.season.shiftsLeft/shiftsDay` — part of factories.state, decremented inside the same sim command and the same DB transaction). No Redis counter. Server season
   bounds (seasons table) are aligned in S4.
@@ -221,6 +229,10 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
 
 ## S5 decisions (leads, quiz, events)
 
+The request / response SHAPES of leads and quiz below are the S5 originals; the client's own (`LeadForm`, `LeadInfo`, `QuizResult` in `types.ts`, wire in
+http-contract.md "POST /api/leads" ... "POST /api/quiz/answer") replaced them in **S9 decisions** (further down), which win. Rules (18+, consent, one
+lead per season, outbox, tags, no personal data in logs) are unchanged.
+
 Everything below is DB + Redis only: no sim call anywhere (tests run with a sim that is down and counts attempts; e2e stops the sim container).
 Alembic `0006` (down_revision `0005`: the revision ids are the short strings `0001`..`0006`, the file names carry the words).
 
@@ -256,8 +268,8 @@ Alembic `0006` (down_revision `0005`: the revision ids are the short strings `00
   (missing = now). All-or-nothing: > 50 -> 422 `too_many_events`, name outside `events.EVENT_NAMES` (= analytics.ts `EventName`, drift test) ->
   `invalid_event_name`, `ts` > now + 60 s -> `future_timestamp`, props > 2 KB / bad types / body NUL -> `validation_error`, body > 256 KB -> 413.
   Response `{accepted:n}`; `source` = `users.source`; `users.is_bot` batches are validated and dropped (`accepted: 0`).
-- **Client** (`clients/web/HttpGameApi.ts`): `submitLead` (adds `consentTextVersion`, 409 counts as ok, `lastLeadError`), `myLead`, `revokeLead`,
-  `quizQuestions`, `quizAnswer`, `track` (clamps `ts` to the server clock, drops 4xx batches, rethrows network/429/5xx so analytics.ts re-queues).
+- **Client**: the frontend's own `web/src/lib/api/http/HttpGameApi.ts` (the backend no longer ships a client; the S5-era `clients/web` was removed in S10).
+  Leads: `submitLead` -> `{ok}` | `{ok:false, error:<error.code>}`, `getLead` (404 = none), `revokeLead` (404 = ok); `track` cuts batches of 50 and drops 4xx batches.
 
 ## S6 decisions
 
@@ -335,3 +347,24 @@ Alembic `0008` (down_revision `0007`): `leads.institution_kind` (`vuz|college`, 
   can finish it within 48 h; a rebuild / upgrade / break shifts it, a cut line removes it, undo brings it back.
 - **State size:** ~31 KB after 158 commands (incl. a full 20-step undo history and the 50-entry idempotency log) on the 48-building demo
   layout; the 150 KB audit is a regular test.
+
+## S13 decisions (one origin, events, test users)
+
+- **Web build on the same origin.** The caddy image is built from `web/Dockerfile` (context = repo root, `web/Dockerfile.dockerignore` keeps the context to
+  `vendor/frontend/web`): stage 1 `node:22-alpine` + `pnpm@10 install --frozen-lockfile` + `pnpm build` (SvelteKit adapter-static, `fallback: index.html`),
+  stage 2 `caddy:2-alpine` with the output in `/srv`. **`VITE_API_URL=/`**: `lib/api/index.ts` picks `HttpGameApi` only for a non-empty value, and the client trims the
+  trailing slash, so requests go to the relative `/api/...` of whatever origin served the page (one image for every `DOMAIN`; an empty value would silently select the mock).
+  Caddyfile order: `/internal*` 404, `/api/*` + `/health` + `/ready` -> api, everything else -> `/srv` with `try_files {path} {path}.html /index.html`;
+  `/_app/immutable/*` is cached for a year, pages are `no-cache`. `WEBAPP_URL=https://${DOMAIN}/`. CORS stays for a dev server on another origin (`CORS_ORIGINS`).
+- **`POST /api/events` partial accept** (supersedes the all-or-nothing rule of "S5 decisions"). Per event: unknown / missing name, non-object item, bad or future `ts` (more than 60 s ahead), non-object or over-2-KB `props` are dropped,
+  the rest is stored in one transaction. Response `{accepted, rejected, rejects?: [{index, reason, name?}]}`, reasons `invalid_event_name | invalid_event | invalid_ts |
+  future_timestamp | invalid_props | props_too_large`. Still 422 for the whole request: malformed envelope / NUL (`validation_error`) and more than 50 events (`too_many_events`).
+  Bots still answer `accepted: 0`. Rate limit `events`: 10/min + burst 6 = 16 (the client flushes every 5 s = 12/min, plus a flush when the tab hides).
+- **Test users (`users.is_test`, `factories.is_test`, migration 0009).** Set by dev auth (`app/testusers.py`): the name part of `Authorization: dev <id>:<name>` / `X-Dev-User: <id>:<name>`
+  starts with `e2e` (case-insensitive; the e2e helpers send `e2e`, the smoke suite `e2e-smoke`), or `tg_id >= 10**12`. Telegram (tma) users never are. The flag is sticky
+  (an existing user who authenticates once as a test user stays flagged; the factory copy is updated in the same transaction). The migration back-fills the same rule.
+  Like `is_bot`, `factories.is_test` is denormalised so board / rank queries need no join. Excluded: the leaderboard (rows, total, `uni` aggregate), `rank_of` (so also
+  `snapshot.rank` and `season/summary`), `season_results` at freeze time, the `top_advance` job; in the bot all HR queries (leads list, CSV, funnel, sources, stats, `/top`), order
+  reminders and the lead-card delivery (their outbox rows are marked sent with `last_error='test user: not delivered'`). A test player still sees their own `me` place.
+  `python -m app.purge_test_users [--dry-run]` deletes them with all their data (FK cascades + explicit `events` and `outbox` rows) and drops the `lb:*` Redis caches.
+  The frontend's `X-Dev-User` carries no name, so a test that uses it must pick an id >= 10**12 or send `<id>:e2e`; real browser dev players (`Dev<id>`) stay normal players.

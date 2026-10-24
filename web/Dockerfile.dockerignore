@@ -1,0 +1,9 @@
+# Used instead of the root .dockerignore for web/Dockerfile (BuildKit picks <Dockerfile>.dockerignore first).
+# The web build needs vendor/frontend/web and nothing else.
+*
+!vendor/frontend/web
+vendor/frontend/web/node_modules
+vendor/frontend/web/.svelte-kit
+vendor/frontend/web/build
+vendor/frontend/web/docs
+vendor/frontend/web/tools

@@ -276,6 +276,12 @@ flowchart LR
 * **Выбор дата-центра.** Клиент берёт каталог регионов у LoadBalancer и меряет задержку анонимным `/routing/ping`; несовместимый клиент получает `426` до изменения состояния. Схема площадок, Patroni, Redis Sentinel и lease бота в etcd — в [`deploy`](https://github.com/cvn-mosprom/deploy#как-клиент-выбирает-дата-центр).
 * **Production preflight** требует сильных секретов, явных HTTPS-origin и роли приложения без административных прав; access-логи API не содержат `user_id` и `tg_id`.
 
+Система готова к развёртыванию на распределённой инфраструктуре с горизонтальным и вертикальным масштабированием серверной части: добавлением экземпляров API/sim и увеличением CPU/RAM и числа воркеров. Полная схема и inventory находятся в deploy. Сейчас фактически развёрнута одна VM прототипа; многоузловой Patroni и испытания четырёх площадок этим CD не запускаются.
+
+При запуске frontend запрашивает через LoadBalancer список доступных региональных API: **МОСКВА-1, КАЗАНЬ, САНКТ-ПЕТЕРБУРГ и МОСКВА-2**. Клиент проверяет доступность и задержку HTTPS-запросов, выбирает подходящий дата-центр и направляет туда игровые запросы. При отказе соединения выполняется контролируемое переключение с сохранением правил идемпотентности.
+
+**CD прототипа включён** для `infra/devops-regional-routing`: `publish-prototype` выпускает проверенные API/bot/sim/web с cosign и SLSA v1; `deliver-prototype` повторно проверяет подписи на сервере, сохраняет дамп, выполняет миграции и обновляет только эти четыре сервиса. Секрет SSH находится в environment `prototype`; разрешена только эта ветка. Лендинг — `/`, игра и меню бота — `/app`. Существующие Patroni, etcd, Xray, PostgreSQL и Redis прототипа не обновляются. Отдельные staging/production требуют собственного bootstrap. Инструкции и фактические результаты — [PROTOTYPE-CD.md](https://github.com/cvn-mosprom/deploy/blob/infra/devops-regional-routing/PROTOTYPE-CD.md) и [PROTOTYPE-VALIDATION.md](https://github.com/cvn-mosprom/deploy/blob/infra/devops-regional-routing/PROTOTYPE-VALIDATION.md).
+
 ## Настройка
 
 Полный список — `.env.example`; значения по умолчанию рассчитаны на разработку.

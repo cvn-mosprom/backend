@@ -200,7 +200,7 @@ class LeaderboardService:
     async def visit(self, player_id: str) -> dict[str, Any]:
         """Public cut of somebody's factory: no credits / loan / stock / history (nor xp, orders, skills)."""
         not_found = AppError("player_not_found", "Player not found", details={"player_id": player_id})
-        if not (player_id.isascii() and player_id.isdigit()) or int(player_id) >= 2**63:
+        if not (player_id.isascii() and player_id.isdigit()) or len(player_id) > 19 or int(player_id) >= 2**63:  # int() caps at 4300 digits
             raise not_found
         layout = func.coalesce(Factory.state[("sim", "layout")], Factory.snapshot[("factory", "layout")], type_=JSONB)
         q = (select(User.id, User.first_name, User.last_name, User.username, User.tg_id, User.university, User.is_bot,

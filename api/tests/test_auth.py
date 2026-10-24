@@ -137,8 +137,19 @@ async def test_dev_auth_disabled_by_flag(make_client):
 
 async def test_dev_auth_malformed(make_client):
     c = await make_client()
-    for value in ("dev abc", "dev 0", "dev -4", "dev "):
+    for value in ("dev abc", "dev 0", "dev -4", "dev ", "dev 9223372036854775808", "dev " + "9" * 23, "dev " + "9" * 5000):
         assert_error(await c.get("/api/me", headers={"Authorization": value}), 401, "invalid_init_data")
+
+
+def test_tg_id_must_fit_a_signed_bigint():
+    assert auth.parse_dev_header(str(2**63 - 1)).tg_id == 2**63 - 1
+    assert verify_init_data(make_init_data(BOT_TOKEN, {"id": 2**63 - 1}), BOT_TOKEN, 86400).tg_id == 2**63 - 1
+    for too_big in ("9223372036854775808", "9" * 23, "9" * 5000):
+        with pytest.raises(AppError) as exc:
+            auth.parse_dev_header(too_big)
+        assert exc.value.code == "invalid_init_data"
+    for too_big in (2**63, 10**23, 1e30, float("inf")):  # inf: json "Infinity", int() raises OverflowError
+        assert _code(make_init_data(BOT_TOKEN, {"id": too_big})) == "invalid_init_data"
 
 
 async def test_tma_without_bot_token_is_config_error(make_client):

@@ -28,6 +28,7 @@ log = logging.getLogger("mosprom.auth")
 AUTH_CACHE_TTL_S = 300
 FUTURE_SKEW_S = 300  # tolerated clock skew for an auth_date from the future
 LAST_SEEN_THROTTLE = timedelta(seconds=60)
+MAX_TG_ID = 2**63 - 1  # users.tg_id is a signed bigint
 
 
 @dataclass(frozen=True)
@@ -67,9 +68,9 @@ def verify_init_data(raw: str, bot_token: str, max_age_s: int, now: float | None
         auth_date = int(fields["auth_date"])
         user = json.loads(fields["user"])
         tg_id = int(user["id"])
-    except (KeyError, ValueError, TypeError):
+    except (KeyError, ValueError, TypeError, OverflowError):
         raise _invalid("initData is missing auth_date or user") from None
-    if tg_id <= 0:
+    if not 0 < tg_id <= MAX_TG_ID:
         raise _invalid("initData user is invalid")
 
     now = time.time() if now is None else now
@@ -93,8 +94,8 @@ def parse_dev_header(value: str) -> Identity:
         tg_id = int(ident)
     except ValueError:
         raise _invalid("dev auth expects '<tg_id>[:<name>]'") from None
-    if tg_id <= 0:
-        raise _invalid("dev tg_id must be positive")
+    if not 0 < tg_id <= MAX_TG_ID:
+        raise _invalid("dev tg_id must be a positive 64-bit integer")
     return Identity(tg_id=tg_id, first_name=name.strip()[:64] or f"Dev{tg_id}")
 
 

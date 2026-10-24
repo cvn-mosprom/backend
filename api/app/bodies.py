@@ -15,6 +15,23 @@ def invalid(field: str, msg: str, **extra: Any) -> AppError:
                     details={"errors": [{"loc": ["body", *filter(None, field.split("."))], "msg": msg, "type": "value_error"}], **extra})
 
 
+NO_CONTROL = r"^[^\x00-\x1f\x7f]*$"  # Query/Field `pattern`: no control characters (NUL included)
+
+
+def reject_nul(value: Any, field: str = "") -> None:
+    """422 if any string (or dict key) nested in `value` holds NUL: Postgres text / jsonb cannot store it."""
+    if isinstance(value, str):
+        if "\x00" in value:
+            raise invalid(field, "NUL characters are not allowed")
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            reject_nul(k, field)
+            reject_nul(v, f"{field}.{k}" if field else str(k))
+    elif isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            reject_nul(v, f"{field}.{i}" if field else str(i))
+
+
 async def read_json(request: Request, max_bytes: int) -> Any:
     """Body -> JSON value. Oversized -> 413 payload_too_large, malformed (or nested deeper than orjson allows) -> 422."""
     body = await request.body()

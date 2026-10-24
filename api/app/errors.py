@@ -104,9 +104,18 @@ _DB_REASONS = {"57014": "statement_timeout", "55P03": "lock_timeout", "57P01": "
                "57P02": "crash_shutdown", "57P03": "cannot_connect_now", "53300": "too_many_connections"}
 
 
+# SQLSTATEs of text the database cannot store: 22021 invalid byte sequence (NUL), 22P05 untranslatable \u0000 in jsonb.
+_DB_BAD_TEXT = {"22021", "22P05"}
+
+
 async def _db_error(request: Request, exc: DBAPIError) -> Response:
-    """Statement / lock timeouts and a restarting database -> 503 db_unavailable; any other DB error stays a 500."""
+    """Statement / lock timeouts and a restarting database -> 503 db_unavailable; NUL / unstorable text that slipped past
+    validation -> 422 validation_error; any other DB error stays a 500."""
     state = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    if state in _DB_BAD_TEXT:
+        log.warning("database rejected request text (%s)", state)
+        _mark(request, "validation_error")
+        return error_response("validation_error", "Request contains characters that cannot be stored", 422)
     reason = _DB_REASONS.get(state or "")
     if reason is None and (state or "").startswith("08"):
         reason = "connection_error"

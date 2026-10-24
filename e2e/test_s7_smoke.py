@@ -642,10 +642,8 @@ def test_oversize_bodies(api: SmokeApi):
     ("GET", "/api/season/leaderboard?season_id=abc", 422, "validation_error"),
     ("GET", "/api/season/leaderboard?season_id=-1", 422, "validation_error"),
     ("GET", "/api/season/leaderboard?season_id=999999", 404, "season_not_found"),
-    pytest.param("GET", "/api/season/leaderboard?university=%00", 422, "validation_error",
-                 marks=xfail_bug("GET /api/season/leaderboard?university=%00 -> 500 internal_error (NUL char reaches Postgres)")),
-    pytest.param("GET", "/api/factory/" + "9" * 5000, 404, "player_not_found",
-                 marks=xfail_bug("GET /api/factory/<5000 digits> -> 500 (int() digit limit); 23 digits -> 404 correctly")),
+    ("GET", "/api/season/leaderboard?university=%00", 422, "validation_error"),
+    ("GET", "/api/factory/" + "9" * 5000, 404, "player_not_found"),
 ], ids=lambda v: v[:50] if isinstance(v, str) else None)
 def test_odd_methods_paths_and_queries(api: SmokeApi, method: str, path: str, status: int, code: str | None):
     api.bootstrap()
@@ -713,9 +711,7 @@ def test_other_endpoints_bad_bodies(api: SmokeApi, path: str, kwargs: dict, code
     ("dev", 401, "invalid_init_data"), ("dev abc", 401, "invalid_init_data"), ("dev -3", 401, "invalid_init_data"),
     ("dev 0", 401, "invalid_init_data"), ("dev 1.5", 401, "invalid_init_data"), ("dev 1e5", 401, "invalid_init_data"),
     ("dev :name", 401, "invalid_init_data"), ("dev 9223372036854775807:Max", 200, None),
-    pytest.param("dev 9223372036854775808", 401, "invalid_init_data",
-                 marks=xfail_bug("Authorization: dev <tg_id > 2^63-1> -> 500 internal_error on every /api route (bigint overflow in users upsert)")),
-    pytest.param("dev 99999999999999999999999", 401, "invalid_init_data", marks=xfail_bug("same, 23-digit tg_id")),
+    ("dev 9223372036854775808", 401, "invalid_init_data"), ("dev 99999999999999999999999", 401, "invalid_init_data"),
 ])
 def test_dev_auth_header_edge_cases(header: str, status: int, code: str | None):
     with httpx.Client(base_url=BASE, verify=False, timeout=30.0) as c:
@@ -777,11 +773,8 @@ def test_fuzz_every_command_type_with_poison_never_5xx(new_user):
         assert u.me()["version"] == u.version and u.me()["degraded"] is False  # the factory is still readable and consistent
 
 
-# ---- known bugs (one scenario each, xfail until fixed) ----
-@pytest.mark.parametrize("what", [
-    pytest.param("key_nul", marks=xfail_bug("POST /api/command idempotency_key='abcdefgh\\u0000z' -> 500 (NUL cannot be stored in state.meta.idempotency jsonb)")),
-    pytest.param("name_nul", marks=xfail_bug("POST /api/command renameFactory name='A\\u0000B' -> 500 (NUL in jsonb state); events/leads/quiz reject NUL with 422")),
-])
+# ---- regressions: NUL in command input is a 422, never a 500 (it cannot be stored in the jsonb state) ----
+@pytest.mark.parametrize("what", ["key_nul", "name_nul"])
 def test_known_bugs_command_input(api: SmokeApi, what: str):
     api.bootstrap()
     cmd = {"type": "renameFactory", "name": "Name OK"}
@@ -792,7 +785,7 @@ def test_known_bugs_command_input(api: SmokeApi, what: str):
         cmd["name"] = "A\u0000B"
     with api.unchecked():
         r = api.send(cmd, version=0, key=key)
-    assert r.status_code < 500, f"500 instead of a 4xx: {r.text[:120]}"
+    assert r.status_code == 422, f"expected 422 validation_error: {r.status_code} {r.text[:120]}"
 
 
 # ========================================================================================== E. auth

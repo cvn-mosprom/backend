@@ -421,6 +421,23 @@ async def test_other_database_errors_stay_500(make_client):
     assert_error(await c.get("/t/dbapi"), 500, "internal_error")
 
 
+@pytest.mark.parametrize("sqlstate", ["22021", "22P05"])  # invalid byte sequence (NUL) / untranslatable \u0000 in jsonb
+async def test_unstorable_text_database_errors_map_to_422(make_client, sqlstate):
+    c = await make_client()
+
+    class Orig(Exception):
+        pass
+
+    Orig.sqlstate = sqlstate
+
+    @c.app.get("/t/badtext")
+    async def badtext():
+        raise DBAPIError("INSERT", {}, Orig("unsupported Unicode escape sequence"))
+
+    err = assert_error(await c.get("/t/badtext"), 422, "validation_error")
+    assert "Unicode" not in err["message"]
+
+
 # ================================================================ INTERNAL_TOKEN
 
 @pytest.mark.parametrize("token,ok", [("", False), ("short", False), ("dev-internal-token", False),

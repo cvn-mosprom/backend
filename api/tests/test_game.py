@@ -485,6 +485,11 @@ INVALID_BODIES = {
     "version_bool": _body(version=True),
     "version_null": _body(version=None),
     "buildend_bad_key": _body(cmd={"type": "buildEnd"}, idempotency_key="x"),
+    "key_nul": _body(idempotency_key="abcdefgh\u0000z"),
+    "key_newline": _body(idempotency_key="abcdefgh\n"),
+    "key_control": _body(idempotency_key="abcdefgh\x1f"),
+    "name_nul": _body(cmd={"type": "renameFactory", "name": "A\u0000B"}),
+    "university_nul": _body(cmd={"type": "setUniversity", "university": "\u0000"}),
 }
 
 
@@ -510,6 +515,23 @@ async def test_key_length_boundaries_are_accepted(game):
     await bootstrap(game)
     assert (await command(game, 0, "k" * 8, place())).status_code == 200
     assert (await command(game, 1, "k" * 64, place(2, 2))).status_code == 200
+
+
+async def test_key_may_use_uuid_unicode_and_separator_characters(game):
+    await bootstrap(game)
+    assert (await command(game, 0, "3f2b8c1e-9a47-4d0e-b6c5-1a2b3c4d5e6f", place())).status_code == 200
+    assert (await command(game, 1, "Az09._:-Az09", place(2, 2))).status_code == 200
+    assert (await command(game, 2, "ключ ключ 😀", place(3, 3))).status_code == 200  # printable non-ASCII is fine
+
+
+def test_reject_nul_walks_nested_payloads():
+    from app.bodies import reject_nul
+    from app.errors import AppError
+    reject_nul({"type": "tick", "events": [{"k": "ok", "n": 1, "x": None}], "name": "fine"}, "cmd")
+    for bad in ({"a": "x\u0000"}, {"a": ["fine", {"b": "\u0000"}]}, {"a\u0000": 1}, ["\u0000"], "\u0000"):
+        with pytest.raises(AppError) as exc:
+            reject_nul(bad, "cmd")
+        assert exc.value.code == "validation_error"
 
 
 # ================================================================ buildEnd

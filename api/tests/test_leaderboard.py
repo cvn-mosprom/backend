@@ -70,14 +70,17 @@ async def test_422_invalid_tab_and_bad_params(game):
     for tab in ("nope", "", "GENERAL", "general;drop"):
         err = assert_error(await board(game, tab), 422, "invalid_tab")
         assert err["details"]["allowed"] == list(TABS)
-    for bad in ({"limit": 0}, {"limit": 101}, {"limit": "x"}, {"season_id": 0}, {"season_id": "x"}):
+    for bad in ({"limit": 0}, {"limit": 101}, {"limit": "x"}, {"season_id": 0}, {"season_id": "x"},
+                {"university": "\x00"}, {"university": "МГУ\x00"}, {"university_id": "\x00"}, {"university": "a\nb"},
+                {"university": "x" * 201}):
         assert_error(await board(game, **bad), 422, "validation_error")
 
 
 async def test_404_unknown_season_player_and_factory(game):
     sid = await table(game.db, 100)
     assert_error(await board(game, season_id=sid + 5), 404, "season_not_found")
-    for pid in ("999999", "abc", "-1", "1.5", "99999999999999999999999", "%20"):
+    for pid in ("999999", "abc", "-1", "1.5", "99999999999999999999999", "%20",
+                "9" * 19, "9" * 5000, "0" * 5000 + "1"):  # > bigint max; > int()'s 4300-digit limit
         assert_error(await game.get(f"/api/factory/{pid}", headers=dev(5000, "Me")), 404, "player_not_found")
     assert_error(await game.get("/api/season/summary", headers=dev(77)), 404, "factory_not_found")  # never bootstrapped
 

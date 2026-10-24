@@ -10,6 +10,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query, Request
 
 from ..auth import CurrentUser
+from ..bodies import NO_CONTROL
 from ..leaderboard import LeaderboardService
 from ..ratelimit import rate_limit
 
@@ -30,8 +31,8 @@ async def leaderboard(
     user: CurrentUser, board: Board,
     tab: str = "general",  # general | quality | speed | uni, anything else -> 422 invalid_tab
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
-    university: Annotated[str | None, Query(max_length=200)] = None,
-    university_id: Annotated[str | None, Query(max_length=200)] = None,  # alias of `university` (the university name)
+    university: Annotated[str | None, Query(max_length=200, pattern=NO_CONTROL)] = None,
+    university_id: Annotated[str | None, Query(max_length=200, pattern=NO_CONTROL)] = None,  # alias of `university` (the university name)
     season_id: Annotated[int | None, Query(ge=1, le=2**31 - 1)] = None,
 ) -> dict[str, Any]:
     """Top-`limit` (cached in Redis 15-30 s) + the caller's `me` block (place, value, gapTo51, inviteCutoff)."""

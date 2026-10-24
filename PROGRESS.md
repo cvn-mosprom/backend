@@ -13,7 +13,8 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - S7 early done: sim circuit breaker, DB 3 s / lock 2 s / request 5 s timeouts, slow log, backup profile + scripts, restart resilience e2e, README for jury.
 - S6 done: HR bot (outbox delivery, lead cards + status buttons, /leads /export /funnel /sources /stats /top), reminders opt-in + order reminders, 5xx alert, ageConfirm -> users.age_confirmed.
 - S7 smoke suite done (e2e/test_s7_smoke.py, 36 scenarios / ~172 items). It found 5 real 500s, kept as xfail: NUL in idempotency_key, NUL in renameFactory name, leaderboard ?university=%00, factory/<5000 digits>, dev auth tg_id > bigint.
-- Tests now: api 662, sim 87, contract 212, bot 97, e2e 203 + 6 xfail.
+- Smoke-found 500s fixed (NUL in strings/keys -> 422, bounded player id -> 404, tg_id > bigint -> 401, DB 22021/22P05 -> 422).
+- Tests now: api 662, sim 87, contract 212, bot 97, smoke 171 (0 xfail).
 
 ## In progress
 - (none)
@@ -27,5 +28,5 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - Command after >8 h gap: sim runs capped bootstrap first, then the command.
 
 ## Next
-- Fix the 5 smoke-found 500s (turn xfail into pass), final README pass.
+- All planned sprints done. Waiting for the lead: S1 (order ETA in snapshot -> make field required, regenerate contract via contract/generate.sh) and S1U (undo diffs -> remove undo/redo from sim REJECTED_COMMANDS). Frontend: plug clients/web/HttpGameApi.ts.
 - Migration ids are short: next is "0007" with down_revision "0006".

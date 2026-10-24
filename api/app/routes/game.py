@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import Response
 
 from ..auth import CurrentUser
+from ..bodies import NO_CONTROL, reject_nul
 from ..contract.generated import Command
 from ..game import GameService, command_payload
 from ..ratelimit import rate_limit
@@ -35,7 +36,7 @@ def json_response(body: dict[str, Any]) -> Response:
 
 class CommandIn(BaseModel):
     version: int = Field(strict=True, ge=0)  # the version the client last saw
-    idempotency_key: str = Field(strict=True, min_length=8, max_length=64)
+    idempotency_key: str = Field(strict=True, min_length=8, max_length=64, pattern=NO_CONTROL)
     cmd: Command  # discriminated union generated from types.ts; unknown type / bad payload -> 422 validation_error
 
 
@@ -58,7 +59,9 @@ async def command(body: CommandIn, user: CurrentUser, game: Game) -> Response:
     if cmd.type == "buildEnd":
         return json_response(await game.build_end(user))
     # forward the validated, normalised command (tick keeps its `from` alias); never the raw request
-    return json_response(await game.command(user, body.version, body.idempotency_key, command_payload(cmd)))
+    payload = command_payload(cmd)
+    reject_nul(payload, "cmd")  # state.meta / jsonb cannot hold \u0000
+    return json_response(await game.command(user, body.version, body.idempotency_key, payload))
 
 
 @router.post("/advance", dependencies=[Depends(rate_limit("advance"))], response_model=None)

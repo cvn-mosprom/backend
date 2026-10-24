@@ -39,13 +39,19 @@ LIMITS: dict[str, Limit] = {
     "events": Limit(10, burst=6),  # the web client flushes every 5 s = 12/min (+ a flush on close): 16 fit
     "leads": Limit(5),
     "quiz": Limit(30),
+    "auth": Limit(5),  # S14 web login (POST /api/auth/web/code, /start): per IP, whatever Authorization header is sent
+    "auth_poll": Limit(60, burst=20),  # S14 POST /api/auth/web/poll: the page polls every ~2 s (30/min); per IP
+    "hr": Limit(120),  # C3: every /api/hr/* route (the CRM web client), per user
     "default": Limit(60),
 }
+IP_LIMITS = frozenset({"auth", "auth_poll"})  # unauthenticated endpoints: always counted per IP, never per user
 
 
-async def _subject(request: Request) -> str:
+async def _subject(request: Request, name: str = "") -> str:
     """`u:<tg_id>` for an authenticated caller, else `ip:<addr>` (the route's own auth dependency
-    still rejects the request; here we only need to count it)."""
+    still rejects the request; here we only need to count it). `IP_LIMITS` names always use the IP."""
+    if name in IP_LIMITS:
+        return f"ip:{request.client.host if request.client else 'unknown'}"
     try:
         return f"u:{(await get_identity(request)).tg_id}"
     except AppError:
@@ -58,7 +64,7 @@ async def enforce(request: Request, name: str) -> None:
         return
     limit = LIMITS[name]
     max_requests = settings.rate_limit_overrides.get(name, limit.max_requests)
-    key = f"rl:{name}:{await _subject(request)}"
+    key = f"rl:{name}:{await _subject(request, name)}"
     try:
         async with request.app.state.redis.pipeline(transaction=False) as pipe:
             pipe.incr(key)

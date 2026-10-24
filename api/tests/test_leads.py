@@ -190,12 +190,32 @@ async def test_revoke_is_idempotent_and_keeps_status(engage):
     assert await engage.db.fetchval("SELECT consent_revoked_at FROM leads") == first
     revoked = await outbox(engage, "lead_revoked")
     assert len(revoked) == 1 and revoked[0]["payload"]["lead_id"] == row["id"]
-    # the owner still sees it, marked as revoked
+    # the owner no longer sees it (forgotten), the row stays in the DB for the audit
+    assert_error(await engage.get("/api/leads/me", headers=dev(1)), 404, "lead_not_found")
+    assert await engage.db.fetchval("SELECT count(*) FROM leads") == 1
+
+
+async def test_revoked_player_may_submit_again_in_the_same_season(engage):
+    first = (await post_lead(engage)).json()
+    await engage.db.execute("UPDATE leads SET status = 'interview'")
+    assert (await engage.delete("/api/leads/me", headers=dev(1))).status_code == 204
+    assert_error(await engage.get("/api/leads/me", headers=dev(1)), 404, "lead_not_found")
+    again = await post_lead(engage, fullName="Новое Имя")
+    assert again.status_code == 201 and again.json()["id"] != first["id"] and again.json()["status"] == "new"
+    # the new form is what the owner sees; the revoked row is kept
     me = (await engage.get("/api/leads/me", headers=dev(1))).json()
-    assert me["consentRevokedAt"] is not None and me["status"] == "interview"
-    # one lead per season holds even after a revocation
-    err = assert_error(await post_lead(engage), 409, "lead_already_exists")
-    assert err["details"]["revoked"] is True
+    assert me["id"] == again.json()["id"] and me["fullName"] == "Новое Имя" and me["consentRevokedAt"] is None
+    assert await engage.db.fetchval("SELECT count(*) FROM leads") == 2
+    assert await engage.db.fetchval("SELECT consent_revoked_at IS NOT NULL FROM leads WHERE id = $1", first["id"])
+    # one ACTIVE lead per season still holds
+    assert_error(await post_lead(engage), 409, "lead_already_exists")
+    assert await engage.db.fetchval("SELECT count(*) FROM leads") == 2
+    # the next revoke touches only the active one (one more outbox row), the old row keeps its timestamp
+    old_ts = await engage.db.fetchval("SELECT consent_revoked_at FROM leads WHERE id = $1", first["id"])
+    assert (await engage.delete("/api/leads/me", headers=dev(1))).status_code == 204
+    assert [o["payload"]["lead_id"] for o in await outbox(engage, "lead_revoked")] == [first["id"], again.json()["id"]]
+    assert await engage.db.fetchval("SELECT consent_revoked_at FROM leads WHERE id = $1", first["id"]) == old_ts
+    assert_error(await engage.get("/api/leads/me", headers=dev(1)), 404, "lead_not_found")
 
 
 async def test_revoke_hits_every_lead_of_the_player(engage):
@@ -281,7 +301,7 @@ async def test_validation_error_on_malformed_json(engage):
 async def test_lead_already_exists_409(engage):
     assert (await post_lead(engage)).status_code == 201
     err = assert_error(await post_lead(engage, fullName="Другое Имя"), 409, "lead_already_exists")
-    assert err["details"]["revoked"] is False and err["details"]["season_id"]
+    assert err["details"]["season_id"] and "revoked" not in err["details"]
     assert await engage.db.fetchval("SELECT count(*) FROM leads") == 1
     assert len(await outbox(engage)) == 1  # the rejected duplicate wrote no outbox row
     assert await engage.db.fetchval("SELECT full_name FROM leads") == "Иванов Иван Иванович"
@@ -407,4 +427,8 @@ async def test_summary_shows_quiz_result_and_lead_status(game):
     assert r.status_code == 201 and r.json()["quizScore"] == 4
     assert (await game.get("/api/season/summary", headers=dev(1))).json()["leadStatus"] == "new"
     await game.delete("/api/leads/me", headers=dev(1))
-    assert (await game.get("/api/season/summary", headers=dev(1))).json()["leadStatus"] == "revoked"
+    assert (await game.get("/api/season/summary", headers=dev(1))).json()["leadStatus"] == "revoked"  # only revoked ones exist
+    assert (await post_lead(game)).status_code == 201  # a new form after the revocation: the latest non-revoked wins
+    assert (await game.get("/api/season/summary", headers=dev(1))).json()["leadStatus"] == "new"
+    await game.db.execute("UPDATE leads SET status = 'interview' WHERE consent_revoked_at IS NULL")
+    assert (await game.get("/api/season/summary", headers=dev(1))).json()["leadStatus"] == "interview"

@@ -165,3 +165,98 @@ def test_the_scheduler_keeps_running_while_the_api_fails():
             scheduler.shutdown(wait=False)
 
     run(with_api(test, status=500))
+
+
+# ---------------------------------------------------------------- C1: achievements_recompute
+
+async def with_recompute_api(test, answers: list[Any]):
+    """Fake api for /internal/achievements/recompute: answers the calls in order (the last one repeats); an int is an HTTP status."""
+    seen: list[dict[str, Any]] = []
+
+    async def handler(request: web.Request) -> web.Response:
+        body = await request.json()
+        seen.append({"path": request.path, "token": request.headers.get("X-Internal-Token"), "body": body})
+        a = answers[min(len(seen), len(answers)) - 1]
+        return web.Response(status=a, text="boom") if isinstance(a, int) else web.json_response(a)
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", handler)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        await test(seen, str(server.make_url("")).rstrip("/"))
+    finally:
+        await server.close()
+
+
+def test_achievements_recompute_follows_remaining_and_next_after():
+    pages = [
+        {"evaluated": 200, "granted": 5, "failed": 0, "remaining": True, "next_after": 310},
+        {"evaluated": 200, "granted": 0, "failed": 1, "remaining": True, "next_after": 640},
+        {"evaluated": 12, "granted": 2, "failed": 0, "remaining": False, "next_after": 655},
+    ]
+
+    async def test(seen, url):
+        jobs.set_api(InternalApi(url, TOKEN))
+        total = await jobs.achievements_recompute()
+        assert total == {"evaluated": 412, "granted": 7, "failed": 1, "calls": 3}
+        assert [(r["path"], r["token"]) for r in seen] == [("/internal/achievements/recompute", TOKEN)] * 3
+        assert [r["body"] for r in seen] == [{"limit": 200, "after": 0}, {"limit": 200, "after": 310}, {"limit": 200, "after": 640}]
+
+    run(with_recompute_api(test, pages))
+
+
+def test_achievements_recompute_stops_after_the_call_cap_and_resumes_next_run():
+    page = {"evaluated": 200, "granted": 0, "failed": 0, "remaining": True, "next_after": 1}
+
+    async def test(seen, url):
+        jobs.set_api(InternalApi(url, TOKEN))
+        total = await jobs.achievements_recompute()
+        assert total["calls"] == jobs.ACHIEVEMENT_MAX_CALLS == len(seen)
+
+    run(with_recompute_api(test, [page]))
+
+
+def test_achievements_recompute_swallows_errors(caplog):
+    caplog.set_level(logging.INFO)
+
+    async def test(seen, url):
+        jobs.set_api(InternalApi(url, TOKEN))
+        assert await jobs.achievements_recompute() is None  # first call failed: nothing done, no exception
+        assert len(seen) == 1
+
+    for status in (401, 500, 503):
+        run(with_recompute_api(test, [status]))
+    assert "check INTERNAL_TOKEN" in caplog.text
+
+
+def test_achievements_recompute_keeps_the_partial_result_when_a_later_call_fails():
+    first = {"evaluated": 200, "granted": 3, "failed": 0, "remaining": True, "next_after": 7}
+
+    async def test(seen, url):
+        jobs.set_api(InternalApi(url, TOKEN))
+        assert await jobs.achievements_recompute() == {"evaluated": 200, "granted": 3, "failed": 0, "calls": 1}
+        assert len(seen) == 2
+
+    run(with_recompute_api(test, [first, 500]))
+
+
+def test_achievements_recompute_without_a_token_makes_no_request():
+    async def test(seen, url):
+        jobs.set_api(InternalApi(url, ""))
+        assert await jobs.achievements_recompute() is None
+        assert seen == []
+
+    run(with_recompute_api(test, [{}]))
+
+
+def test_achievements_recompute_is_registered_every_ten_minutes():
+    async def test():
+        scheduler = build_scheduler()
+        ids = register_jobs(scheduler)
+        assert "achievements_recompute" in ids and ids[:3] == ["seasons_rotate", "top_advance", "bots_grow"]
+        job = {j.id: j for j in scheduler.get_jobs()}["achievements_recompute"]
+        assert job.trigger.interval.total_seconds() == 600 and job.max_instances == 1 and job.coalesce
+        assert job.func is jobs.achievements_recompute
+
+    run(test())

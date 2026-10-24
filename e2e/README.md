@@ -114,9 +114,9 @@ cd e2e/client && npm run typecheck           # tsc over the scenarios AND the ve
 `test_s10_client.py` is the pytest wrapper: it runs `npx vitest`-equivalent (`node node_modules/vitest/vitest.mjs run`) and fails with the tail of the
 output; it skips with a clear message when node/npm are missing or `npm ci` cannot run (offline). Full run is about 60 s (the tutorial shipment).
 
-**Known deviation kept visible** (`it.fails` in `journey.test.ts`): after `revokeLead()` the server keeps the revoked row and `GET /api/leads/me` still
-returns it, while the client (fakeApi, MockGameApi, `LeadForm.svelte`: "анкета удалена") expects `getLead()` to be `null`. The step flips to red when
-the server returns 404 `lead_not_found` for a revoked lead - then turn it into a plain `it()`.
+**Revoke** (`journey.test.ts`): after `revokeLead()` `GET /api/leads/me` is 404 `lead_not_found`, so `getLead()` is `null` like in the client's fakeApi /
+MockGameApi / `LeadForm.svelte` ("анкета удалена"); the server keeps the revoked row (`consent_revoked_at`) for the audit and the player may submit a new form
+in the same season. `newDevUser()` ids are >= 10^12, so the e2e players are flagged `is_test` (the dev header carries no name).
 
 **Drift check** (`E2E_MUTATE`): `scenarios/setup.ts` can rename keys, at any depth, in every JSON answer before the client sees it, a stand-in for "the server
 renamed a field": `cd client && E2E_ORDER_WAIT_S=0 E2E_MUTATE=etaAt:eta_at npx vitest run`. Tried on the live stack: `etaAt:eta_at` -> `acceptOrder` step red

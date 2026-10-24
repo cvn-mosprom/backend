@@ -112,7 +112,7 @@ async def alert_5xx() -> dict[str, Any] | None:
     if redis is None:
         return None
     try:
-        return await check_5xx(rt.bot, redis, rt.settings.hr_admin_tg_ids)
+        return await check_5xx(rt.bot, redis, await rt.admin_ids())
     except Exception as e:  # Redis restarting, Telegram down ...: the next minute retries
         log.warning("alert_5xx failed: %s: %s", type(e).__name__, e)
         return None

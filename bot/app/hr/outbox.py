@@ -108,7 +108,7 @@ async def deliver_once(rt: runtime.Runtime, limit: int = BATCH) -> DeliveryResul
     if rt.sm is None:
         res.skipped = "no_db"
         return res
-    chats = rt.recipients()
+    chats = await rt.recipients()
     if not chats:
         res.skipped = "no_recipients"
         _warn_once("recipients", "outbox delivery paused: HR_ADMIN_TG_IDS / HR_CHAT_ID name nobody to send lead cards to")

@@ -207,7 +207,8 @@ def test_demo_path_end_to_end(api: SmokeApi):
     assert api.http.get("/api/season/summary").json()["leadStatus"] == "new"
     assert api.http.post("/api/events", json={"events": [ev(), ev("game_end", result="win", duration_ms=4200)]}).json() == {"accepted": 2, "rejected": 0}
     assert api.http.delete("/api/leads/me").status_code == 204
-    assert api.http.get("/api/leads/me").json()["consentRevokedAt"] is not None
+    gone = api.http.get("/api/leads/me")  # the revoked form is forgotten for the owner (the row stays in the DB)
+    assert gone.status_code == 404 and gone.json()["error"]["code"] == "lead_not_found"
     assert api.http.get("/api/season/summary").json()["leadStatus"] == "revoked"
     assert api.http.delete("/api/leads/me").status_code == 204
     assert api.me()["version"] == api.version, "the whole non-game tail never touched the factory version"
@@ -427,9 +428,10 @@ def test_duplicate_lead_and_revoke_from_three_tabs(api: SmokeApi):
     assert api.http.get("/api/leads/me").json()["id"] == lead["id"]
     res = par([lambda t=t: t.http.delete("/api/leads/me") for t in tabs])
     assert [r.status_code for r in res] == [204] * 3
-    assert api.http.get("/api/leads/me").json()["consentRevokedAt"] is not None
+    assert api.http.get("/api/leads/me").status_code == 404
     again = api.http.post("/api/leads", json=lead_body())
-    assert again.status_code == 409 and again.json()["error"]["details"]["revoked"] is True  # revoked still blocks this season
+    assert again.status_code == 201 and again.json()["id"] != lead["id"]  # a revoked form does not block a new one
+    assert api.http.get("/api/leads/me").json()["id"] == again.json()["id"]
 
 
 def test_duplicate_quiz_submit_from_three_tabs(api: SmokeApi):

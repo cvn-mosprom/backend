@@ -37,6 +37,22 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - Live Telegram demo run on a real domain with BOT_TOKEN (manual checklist in README "Demo in Telegram"); run `python -m app.purge_test_users` first.
 
 ## Open after S10/S13 (small)
-- GET /api/leads/me returns the revoked lead (200); frontend fakeApi/MockGameApi expect 404 after DELETE (and allow a new submit). Recorded as it.fails in e2e/client/scenarios/journey.test.ts.
-- e2e/client sends X-Dev-User without a name -> not flagged is_test; use ids >= 10^12 (testusers rule).
+- DONE (S14): GET /api/leads/me -> 404 after DELETE and a new lead may be submitted (migration 0010, partial unique index); the it.fails in journey.test.ts is a plain it().
+- DONE (S14): e2e/client newDevUser() ids >= 10^12 -> flagged is_test.
 - Dev DB has ~1770 old 'smoke' users not flagged: `docker compose down -v` or flag + purge before the demo.
+
+## S14 (web login) and fixes — done
+- Revoked lead: GET /api/leads/me -> 404, resubmit allowed (partial unique index, migration 0010); e2e/client ids >= 10^12 (is_test).
+- Web login via the bot (migration 0011): /login code -> POST /api/auth/web/code; deep link t.me/<bot>?start=weblogin_<nonce> + /api/auth/web/start|poll; Authorization: Bearer sessions (30 d sliding); /logout_web. One account = one tg_id = one factory. Frontend contract: docs/web-auth.md (frontend lead must add the login screen + Bearer header).
+- Local bot container kept STOPPED (real BOT_TOKEN in .env; the lead runs the bot elsewhere). Rebuild with `--no-deps api`.
+- Tests: api 848, bot 125, e2e 255 + 5 skipped.
+
+## S15 media in SeaweedFS — done
+- seaweedfs (S3 :8333, bucket `media`, anonymous read only), one-shot media-sync (scripts/media_sync.py) uploads vendor/frontend/web/static/{landing,labels,audio,icons}; Caddy proxies those paths to SeaweedFS; web image no longer carries them. Re-run `docker compose run --rm media-sync` after a submodule bump.
+- Tests: api 867, e2e 360 + 6 skipped.
+
+## HR CRM (docs/hr-crm-plan.md)
+- C1 done: 38 achievements, pure engine, hooks after command/shift (savepoint), internal recompute + bot job every 10 min, backfill (dev: 114 granted to 49 players). Migration 0012.
+- C3 done: hr_users roles (analyst < hr < hr_lead < admin), lead_events, /api/hr/me, /api/hr/users, PII masking for analyst, bot uses roles. Migration 0013.
+- Tests: api 1054, bot 146, e2e 360 + 6 skipped.
+- Next: C2 (points/competencies/fit, player API, achievementsUnlocked, outbox notifications gold+seasonal) and C4 (candidates, pipeline, notes, messages) in parallel; then C5, C6.

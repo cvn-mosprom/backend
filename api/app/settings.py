@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:56379/0"
     sim_url: str = "http://127.0.0.1:8080"
     sim_timeout_s: float = 3.0
+    # S15: base URL of the site media in SeaweedFS (compose: http://seaweedfs:8333/media). Only /ready probes it, and a media
+    # outage is reported there but never fails readiness. Empty -> the check is skipped.
+    media_url: str = ""
     bot_token: str = ""
     dev_auth: bool = False
     init_data_max_age_s: int = 86400
@@ -82,6 +85,14 @@ class Settings(BaseSettings):
     # Empty = the internal API is disabled (always 401). APP_ENV=prod refuses to start with an empty/placeholder value.
     internal_token: str = ""
 
+    # S14 web login via the bot: username of the bot WITHOUT '@' (only for the deep link of POST /api/auth/web/start;
+    # empty -> that endpoint answers 503 config_error, the code login keeps working).
+    bot_username: str = ""
+
+    # C3: Telegram ids that become active `admin` rows of hr_users on startup when absent (comma / space separated). Bootstrap
+    # only: after the first start the table is the source of truth (roles are managed through /api/hr/users).
+    hr_admin_tg_ids: str = ""
+
     # Rate limiter: master switch + per-name override of the max requests per window,
     # e.g. RATE_LIMIT_OVERRIDES='{"command": 600}'.
     rate_limit_enabled: bool = True
@@ -100,6 +111,24 @@ class Settings(BaseSettings):
     @classmethod
     def _db_url(cls, v: str) -> str:
         return normalize_db_url(v)
+
+    @field_validator("bot_username", mode="after")
+    @classmethod
+    def _bot_username(cls, v: str) -> str:
+        return v.strip().lstrip("@")
+
+    @property
+    def hr_admin_ids(self) -> list[int]:
+        """HR_ADMIN_TG_IDS parsed: garbage entries and non-positive ids are ignored, order kept, duplicates dropped."""
+        out: dict[int, None] = {}
+        for part in self.hr_admin_tg_ids.replace(";", ",").replace(" ", ",").split(","):
+            try:
+                n = int(part)
+            except ValueError:
+                continue
+            if 0 < n <= 2**63 - 1:
+                out[n] = None
+        return list(out)
 
     @property
     def is_prod(self) -> bool:

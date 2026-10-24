@@ -48,14 +48,43 @@
 		}
 	}
 
+	# S15: site media (landing videos/images, product labels, audio samples, icons) are NOT in the web image: they live in
+	# SeaweedFS (bucket `media`, filled by the media-sync service) under the same relative path, so /landing/hero.mp4 is
+	# /media/landing/hero.mp4 there. Anonymous read-only S3 GET/HEAD (the bucket allows nothing else for anonymous), so a plain
+	# prefix rewrite is safe (no SigV4 to break). Range requests pass straight through (video seeking: 206 + Content-Range) and
+	# Cache-Control / Content-Type come from the stored object. Any S3 4xx (missing key, bucket listing denied) is a plain 404,
+	# not S3 XML. The only query the client sends is the cache-buster `?v=<rev>` (icons/buildings.png); anything else would be
+	# forwarded as an S3 sub-resource (?tagging, ?uploads, ?list-type, ...), so it is a 404 here.
+	@media path /landing/* /labels/* /audio/* /icons/*
+	handle @media {
+		@media_write not method GET HEAD
+		respond @media_write "method not allowed" 405
+		@media_query expression `{query} != "" && !{query}.matches("^v=[0-9A-Za-z._-]*$")`
+		respond @media_query "not found" 404
+		rewrite * /media{path}
+		reverse_proxy seaweedfs:8333 {
+			header_up Host {upstream_hostport}
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 15s
+			}
+			@s3_denied status 400 403 404 501
+			handle_response @s3_denied {
+				header Cache-Control "no-cache"
+				respond "not found" 404
+			}
+		}
+	}
+
 	# Mini App web build (SvelteKit adapter-static, built by web/Dockerfile with VITE_API_URL=/): static files first, then
 	# `<path>.html` (prerendered /landing), then the SPA fallback index.html for client-side routes (/play, /privacy, ...).
-	# /api, /health, /ready and /internal were handled above, so an unknown /api/x is the api's own JSON 404.
+	# /api, /health, /ready, /internal and the SeaweedFS media paths were handled above, so an unknown /api/x is the api's own
+	# JSON 404 and a missing /landing/x.png is a 404 (never the SPA shell). Fonts stay in the build (tiny, CSS-critical).
 	handle {
 		root * /srv
 		@immutable path /_app/immutable/*
 		header @immutable Cache-Control "public, max-age=31536000, immutable"
-		@pages not path /_app/immutable/* /fonts/* /audio/* /icons/* /labels/* /landing/*
+		@pages not path /_app/immutable/* /fonts/*
 		header @pages Cache-Control "no-cache"
 		try_files {path} {path}.html /index.html
 		file_server

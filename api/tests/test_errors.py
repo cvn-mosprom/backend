@@ -61,7 +61,7 @@ async def test_unexpected_exception_is_500_without_leaks(make_client, caplog):
 
 
 @pytest.mark.parametrize("code,status", [
-    ("unauthorized", 401), ("invalid_init_data", 401), ("auth_expired", 401),
+    ("unauthorized", 401), ("invalid_init_data", 401), ("auth_expired", 401), ("invalid_code", 401), ("login_expired", 410),
     ("age_required", 403), ("consent_required", 403),
     ("factory_not_found", 404), ("lead_not_found", 404),
     ("version_conflict", 409), ("lead_already_exists", 409), ("quiz_already_completed", 409),

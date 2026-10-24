@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -18,6 +20,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .format import INSTITUTION_KINDS, MSK, PROFESSIONS, QUIZ_QUESTION_IDS, STATUS_ALIASES, STATUSES, TAGS, age_years
+
+log = logging.getLogger(__name__)
 
 # Funnel steps = the subset of api/app/events.py EVENT_NAMES that marks progress (a test keeps them in sync).
 FUNNEL_STEPS: tuple[tuple[str, str], ...] = (
@@ -121,8 +125,22 @@ def actor_label(tg_id: int, username: str | None, first_name: str | None) -> str
     return f"{name} (tg {tg_id})"
 
 
+_EVENT_SQL = ("INSERT INTO lead_events (lead_id, actor_hr_id, kind, payload) VALUES "
+              "(:lead, (SELECT id FROM hr_users WHERE tg_id = :tg), :kind, CAST(:payload AS jsonb))")
+
+
+async def record_lead_event(sm, lead_id: int, tg_id: int | None, kind: str, payload: dict[str, Any]) -> None:
+    """One ``lead_events`` row (C3) in its own transaction, best effort: a failing audit write is logged and never breaks the
+    command. ``tg_id`` is resolved to ``hr_users.id`` (NULL when the person has no row, e.g. the HR_ADMIN_TG_IDS fallback)."""
+    try:
+        async with sm() as s, s.begin():
+            await s.execute(text(_EVENT_SQL), {"lead": lead_id, "tg": tg_id, "kind": kind, "payload": json.dumps(payload)})
+    except Exception as e:
+        log.warning("lead_events write failed: %s: %s", type(e).__name__, str(e)[:200])
+
+
 async def set_lead_status(s: AsyncSession, lead_id: int, status: str, actor: str,
-                          now: datetime | None = None) -> tuple[str, dict[str, Any] | None]:
+                          now: datetime | None = None, actor_tg_id: int | None = None) -> tuple[str, dict[str, Any] | None]:
     """Change a lead's status and append an audit line to ``hr_note``. Runs in its own transaction.
 
     Returns (outcome, lead card): ``ok`` | ``unchanged`` | ``revoked`` (refused: consent revoked, nothing written) |
@@ -144,6 +162,12 @@ async def set_lead_status(s: AsyncSession, lead_id: int, status: str, actor: str
             await s.execute(text("UPDATE leads SET status = :st, updated_at = :now, "
                                  "hr_note = concat_ws(E'\\n', hr_note, CAST(:line AS text)) WHERE id = :id"),
                             {"st": status, "now": now, "line": line, "id": lead_id})
+            try:  # history of the candidate (C3); a savepoint, so a failing audit row never rolls the status back
+                async with s.begin_nested():
+                    await s.execute(text(_EVENT_SQL), {"lead": lead_id, "tg": actor_tg_id, "kind": "status", "payload": json.dumps(
+                        {"from": cur.status, "to": status, "via": "bot"})})
+            except Exception as e:
+                log.warning("lead_events write failed: %s: %s", type(e).__name__, str(e)[:200])
             outcome = "ok"
     return outcome, await fetch_lead(s, lead_id)
 

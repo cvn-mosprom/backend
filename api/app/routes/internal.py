@@ -8,17 +8,21 @@ The bot never touches factory state itself, it only calls these endpoints.
   POST /internal/seasons/rotate   close due seasons (freeze results), open the next one      -> {closed: [ids], opened: id|null}
   POST /internal/top/advance      {limit: 1..1000 (200)} lazy catch-up of the top players    -> {advanced, skipped, failed, ms, ...}
   POST /internal/bots/grow        grow the demo bots to the current season progress          -> {bots, season_id, progress}
+  POST /internal/achievements/recompute  {limit: 1..1000 (200), since?, after?, force?, dry_run?} full achievement evaluation of
+                                  one batch of players -> {evaluated, failed, granted, points, unlocked, remaining, next_after, ms}
 """
 from __future__ import annotations
 
 import hmac
 import logging
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, Field
 
 from .. import seasons
+from ..achievements import service as achievements
 from ..errors import AppError
 from ..game import GameService
 from ..seed_bots import grow_current
@@ -79,3 +83,22 @@ async def grow_bots_route(request: Request) -> dict[str, Any]:
         raise AppError("config_error", "DATABASE_URL is not configured")
     async with sm() as session, session.begin():
         return await grow_current(session, now_ms())
+
+
+class RecomputeIn(BaseModel):
+    limit: int = Field(default=200, ge=1, le=1000)
+    since: datetime | None = None  # only factories written at or after this moment (ISO 8601, or a unix timestamp)
+    after: int = Field(default=0, ge=0)  # cursor: continue after this user id (the previous answer's `next_after`)
+    force: bool = False  # re-evaluate even players that are up to date
+    dry_run: bool = False  # evaluate and report, write nothing
+
+
+@router.post("/achievements/recompute")
+async def recompute_achievements(request: Request, body: RecomputeIn | None = None) -> dict[str, Any]:
+    """Full evaluation (every rule) of one batch of real players, see achievements.service.recompute. The caller loops while
+    `remaining` is true, passing `next_after` as `after`. Idempotent: earned achievements are never duplicated or revoked."""
+    sm = request.app.state.sessionmaker
+    if sm is None:
+        raise AppError("config_error", "DATABASE_URL is not configured")
+    b = body or RecomputeIn()
+    return await achievements.recompute(sm, limit=b.limit, since=b.since, after=b.after, force=b.force, dry_run=b.dry_run)

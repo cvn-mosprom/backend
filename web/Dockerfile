@@ -16,9 +16,14 @@ FROM --platform=$BUILDPLATFORM docker.io/library/node:22-alpine@sha256:fe4f6d74e
 ARG PNPM_VERSION=11.25.0
 ARG FRONTEND_REVISION
 ARG ROUTING_ZONE
+ARG REGIONAL_ROUTING=1
+ARG VITE_TG_APP_URL=
+ARG VITE_HR_DEMO=0
 ENV VITE_FRONTEND_REVISION=${FRONTEND_REVISION} \
     VITE_ROUTING_ZONE=${ROUTING_ZONE} \
-    VITE_REGIONAL_ROUTING=1
+    VITE_REGIONAL_ROUTING=${REGIONAL_ROUTING} \
+    VITE_TG_APP_URL=${VITE_TG_APP_URL} \
+    VITE_HR_DEMO=${VITE_HR_DEMO}
 ARG VITE_API_URL=/
 ENV CI=true \
     VITE_API_URL=${VITE_API_URL}
@@ -30,6 +35,10 @@ RUN pnpm install --frozen-lockfile
 COPY vendor/frontend/web/ ./
 COPY web/generate-csp.mjs /tmp/generate-csp.mjs
 RUN pnpm run build && node /tmp/generate-csp.mjs /app/build /tmp/content-security-policy.caddy
+# S15: the site media are served from SeaweedFS (compose: seaweedfs + media-sync; Caddyfile: /landing /labels /audio /icons ->
+# /media/...). Drop them from the output so the image carries only the app and SeaweedFS is the single source. The prerendered
+# page build/landing.html is a FILE next to the build/landing/ media dir and stays. Fonts stay (tiny, CSS-critical).
+RUN rm -rf build/landing build/labels build/audio build/icons  && test -f build/landing.html && test -f build/index.html && test -d build/fonts
 
 # Rebuild the upstream Caddy command with patched Go and the reviewed module lock.
 FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS caddy-build

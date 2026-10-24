@@ -20,6 +20,8 @@ def test_limit_table_matches_spec():
     assert per_min["advance"] == 10 and per_min["leaderboard"] == 60 and per_min["events"] == 10
     assert LIMITS["events"].max_requests >= 13  # the client flushes every 5 s = 12/min (S13)
     assert per_min["leads"] == 5 and per_min["quiz"] == 30
+    assert per_min["auth"] == 5 and LIMITS["auth_poll"].max_requests >= 40  # S14: web login, per IP (IP_LIMITS)
+    assert per_min["hr"] == 120  # C3: every /api/hr/* route, per user
     assert all(lim.window_s == 60 for lim in LIMITS.values())
     assert LIMITS["command"].burst > 0  # "small burst"
 

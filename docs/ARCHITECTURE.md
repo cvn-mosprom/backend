@@ -32,8 +32,8 @@ Node: v24 locally, image `node:20-alpine` or newer LTS in Docker. Package manage
 ```
 (`details.version` = the current factory version on a 409; `command_rejected` carries `details.reason` and a fresh `snapshot`; the client's
 parsing rules are in http-contract.md "Ошибки".)
-HTTP status by code: 401 unauthorized|invalid_init_data|auth_expired; 403 age_required|consent_required;
-404 *_not_found; 409 version_conflict|lead_already_exists|quiz_already_completed; 422 validation_error|command_rejected|...;
+HTTP status by code: 401 unauthorized|invalid_init_data|auth_expired|invalid_code; 410 login_expired; 403 age_required|consent_required|forbidden (C3: no active `hr_users` row or too low a role on `/api/hr/*`);
+404 *_not_found; 409 version_conflict|lead_already_exists|quiz_already_completed|hr_user_exists|hr_self_change|hr_last_admin; 422 validation_error|command_rejected|...;
 429 rate_limited (+ `Retry-After` header always); 503 sim_unavailable|db_unavailable|redis_unavailable|config_error; 500 internal_error.
 Every response carries `X-Request-ID` (echo incoming header or generate uuid4).
 
@@ -53,7 +53,7 @@ Every response carries `X-Request-ID` (echo incoming header or generate uuid4).
 
 `APP_ENV` (dev|prod), `DATABASE_URL` (postgresql+asyncpg://...), `REDIS_URL`, `SIM_URL` (http://sim:8080), `SIM_TIMEOUT_S` (3),
 `BOT_TOKEN`, `DEV_AUTH` (0|1), `INIT_DATA_MAX_AGE_S`, `PGBOUNCER` (0|1 -> statement_cache_size=0 + prepared_statement_cache_size=0),
-`DOMAIN` (caddy), `LOG_LEVEL`, `CORS_ORIGINS`, `WEBAPP_URL`.
+`DOMAIN` (caddy), `LOG_LEVEL`, `CORS_ORIGINS`, `WEBAPP_URL`, `BOT_USERNAME` (S14, deep link of the web login).
 
 ## Sim service HTTP API (internal, JSON, port 8080)
 
@@ -241,7 +241,7 @@ Alembic `0006` (down_revision `0005`: the revision ids are the short strings `00
   telegram username; stored bare, without `@`). Optional case fields: `birthDate` (YYYY-MM-DD), `direction` (free text), `course` ("4", 4, "Выпускник"),
   `vacancy` or legacy `roleId` (one of the 7 profession ids), `readyFrom` (date), `readiness` (`now|season|later`), `practiceType` (`paid|free|job`) -
   optional because the vendored form does not send them yet. Check order: 401 -> 429 -> 422 (shape and fields) -> 403 `consent_required` -> 403
-  `age_required` -> 409 `lead_already_exists` (`details.revoked`). Age: `birthDate` < 18 -> 403 even if the age was confirmed; no `birthDate` ->
+  `age_required` -> 409 `lead_already_exists` (`details.season_id`; only a non-revoked lead counts). Age: `birthDate` < 18 -> 403 even if the age was confirmed; no `birthDate` ->
   needs `users.age_confirmed` or `snapshot.player.ageConfirmed` (the real `ageConfirm` lives in the sim state; `users.age_confirmed` is not synced
   from it yet), else 403. Season = `seasons.ensure` (newest season, same as factory writes); one lead per (user, season) via `ON CONFLICT DO NOTHING`.
 - **Tags** (`leads.tags`): `senior` (course >= 4 or graduate), `profile_direction` (keyword match of `direction` against
@@ -252,10 +252,12 @@ Alembic `0006` (down_revision `0005`: the revision ids are the short strings `00
 - **Outbox**: `lead_created` / `lead_revoked` rows (`payload` snake_case; lead_created carries the card fields: lead_id, user_id, tg_id, source,
   full_name, university, direction, course, vacancy, practice_type, readiness, phone, email, telegram, tags, quiz_score, best_profession,
   season_place, created_at) are inserted in the SAME transaction as the lead / revocation; delivery and `sent_at` are the bot's (S6).
-- **GET /api/leads/me**: latest lead (owner's view, no `hr_note`), 404 `lead_not_found`. **DELETE /api/leads/me**: `consent_revoked_at = now` on every
-  non-revoked lead of the player, status untouched, 204; repeating it is a no-op 204 (no second outbox row); 404 without any lead. A revoked lead
-  still blocks a new one in the same season (409, `details.revoked`). Bot/analytics must exclude `consent_revoked_at IS NOT NULL` from the active
-  funnel and mailings. Season summary: `leadStatus` = latest lead status, `"revoked"` after revocation, else null.
+- **GET /api/leads/me**: latest NON-revoked lead (owner's view, no `hr_note`), 404 `lead_not_found` (also after a revocation: the form is forgotten, like the client's fakeApi). **DELETE /api/leads/me**: `consent_revoked_at = now` on every
+  non-revoked lead of the player, status untouched, 204; repeating it is a no-op 204 (no second outbox row); 404 without any lead. The revoked row stays
+  in the DB for the audit (152-FZ) but does not block a new form in the same season: uniqueness is the partial unique index
+  `uq_leads_user_season_active (user_id, season_id) WHERE consent_revoked_at IS NULL` (migration 0010). Bot/analytics must exclude
+  `consent_revoked_at IS NOT NULL` from the active funnel and mailings. Season summary: `leadStatus` = status of the latest non-revoked lead,
+  else `"revoked"` when only revoked ones exist, else null.
 - **Personal data in logs**: access log has no bodies/queries; engine `hide_parameters=True` (no SQL parameters in DBAPI error messages);
   validation errors carry field paths and messages only, never input values.
 - **Quiz**: bank in `api/app/quiz_bank.py` (10 questions from the museum facts; correct index only there). `GET /api/quiz/questions` ->
@@ -273,7 +275,8 @@ Alembic `0006` (down_revision `0005`: the revision ids are the short strings `00
 
 ## S6 decisions
 
-- HR bot (`bot/app/hr/`): access by `HR_ADMIN_TG_IDS`; lead cards to `HR_CHAT_ID` or every admin; outbox job every 7 s
+- HR bot (`bot/app/hr/`): access by `hr_users` since C3 (`HR_ADMIN_TG_IDS` only while that table is empty / unreadable, see
+  docs/hr-crm-plan.md "C3 as built"); lead cards to `HR_CHAT_ID` or every active hr / hr_lead / admin; outbox job every 7 s
   (`FOR UPDATE SKIP LOCKED`, backoff, never consumed without BOT_TOKEN); status buttons append an audit line to `hr_note`;
   /leads /lead /export (CSV `;` + BOM) /funnel /sources /stats /top /hr. Demo bots excluded from all analytics.
 - Player features (`bot/app/player/`, migration 0007): /start upserts the user (first-touch source), reminder opt-in toggle,
@@ -368,3 +371,87 @@ Alembic `0008` (down_revision `0007`): `leads.institution_kind` (`vuz|college`, 
   reminders and the lead-card delivery (their outbox rows are marked sent with `last_error='test user: not delivered'`). A test player still sees their own `me` place.
   `python -m app.purge_test_users [--dry-run]` deletes them with all their data (FK cascades + explicit `events` and `outbox` rows) and drops the `lb:*` Redis caches.
   The frontend's `X-Dev-User` carries no name, so a test that uses it must pick an id >= 10**12 or send `<id>:e2e`; real browser dev players (`Dev<id>`) stay normal players.
+
+## Web login via Telegram bot (S14)
+
+Decision (user, 24.10): the web version has no separate accounts — the player proves their Telegram identity through the bot,
+so web and Telegram are always ONE users row (tg_id) and ONE factory. Factory merging therefore never happens; if it ever
+becomes possible (e.g. guest web accounts), the rule is "the player chooses which factory to keep, the other is archived".
+
+Flows (codes and nonces stored only as sha256; all single-use):
+1. **Code:** player sends `/login` to the bot -> bot calls `POST /internal/auth/login-code {tg_id, username?, first_name?, last_name?}`
+   -> `{code: "6 digits", expiresAt}` (TTL 5 min, new code invalidates older unused ones) -> bot replies with the code ->
+   web `POST /api/auth/web/code {code}` -> `{token, expiresAt, user}`. Wrong code: 401 `invalid_code`; per-IP rate limit
+   `auth` (5/min) + max 5 wrong attempts per code.
+2. **Deep link (no typing):** web `POST /api/auth/web/start` -> `{nonce, botUrl: "https://t.me/<bot>?start=weblogin_<nonce>", expiresAt}`
+   (TTL 5 min) -> player taps, bot shows "Войти на сайт?" button -> bot calls `POST /internal/auth/approve {nonce, tg_id, ...}`
+   -> web polls `POST /api/auth/web/poll {nonce}` -> 202 `{status:"pending"}` | 200 `{token, expiresAt, user}` (once) | 410 `expired`.
+- Session: opaque token (32 bytes urlsafe), sha256 in table `web_sessions` (user_id, token_hash unique, created_at,
+  last_seen_at, expires_at = +30 days sliding, revoked_at, user_agent). Header `Authorization: Bearer <token>` (highest
+  priority with the other Authorization schemes). `DELETE /api/auth/web/session` revokes (204). `GET /api/auth/web/session`
+  -> current user. Bot `/logout_web` revokes all sessions of that tg user (internal `POST /internal/auth/revoke-all`).
+- Users created by the bot before they ever opened the Mini App are fine: the factory is created on first bootstrap from either side.
+- Tables: `web_login_codes`, `web_login_requests`, `web_sessions` — migration "0011" (down_revision "0010").
+- `BOT_USERNAME` env on the api (username without @; compose + .env.example): used only for the `botUrl` of `/start`.
+- Frontend contract for the lead: docs/web-auth.md.
+
+### As built (S14, API side: `app/webauth.py`, `routes/webauth.py`, migration 0011)
+- Errors: wrong / expired / used / invalidated code -> 401 `invalid_code` (one message for all four); nonce unknown / expired /
+  already collected / approved by someone else -> 410 `login_expired` (public poll and internal approve alike); Bearer unknown or
+  revoked -> 401 `unauthorized`, expired -> 401 `auth_expired`; `BOT_USERNAME` empty -> 503 `config_error` on `/start` only.
+- Rate limits (per IP, `IP_LIMITS` in ratelimit.py, a stale Authorization header cannot dodge them): `auth` 5/min for `/code` and
+  `/start`, `auth_poll` 60 (+20 burst)/min for `/poll`. The code endpoint takes the code alone (no tg_id), so a wrong guess cannot
+  be charged to one code: wrong guesses are counted per IP in Redis (`wl:fail:<ip>`); the 5th wrong one locks that IP out of
+  `/code` (429 + Retry-After) until the 10 min window ends; a success clears the counter. (No `attempts` column on the codes.)
+- Code storage: partial unique index on `code_hash WHERE used_at IS NULL` (two live codes never share digits; a clash redraws).
+  `used_at` = exchanged OR invalidated (newer code, `revoke-all`). Redeem is one atomic `UPDATE ... WHERE used_at IS NULL AND
+  expires_at > now RETURNING`. The deep-link session is minted by the poll that consumes the request (`consumed_at`, row lock), so
+  no plaintext token is ever stored. Dead rows (> 7 days) are purged on the write paths.
+- Bearer: shape check (43 urlsafe chars) before any DB access; then `web_sessions` JOIN `users` by sha256; sliding renewal (last_seen_at,
+  expires_at +30 d) at most hourly; resolves to the users row of that `tg_id`, so bootstrap / commands use the same factory as tma / dev.
+  `DELETE /api/auth/web/session` is a 204 no-op for non-Bearer callers.
+- Internal bodies accept snake_case (`tg_id`, `first_name`) and camelCase. A call without any profile field keeps the stored names;
+  `is_test` is set only under DEV_AUTH by the dev rule (testusers.py), never for real ids in prod.
+
+## S15: media in SeaweedFS
+
+Reference: lct-testkit/backend (seaweedfs `server -s3`, `s3.json` identities, Caddy in front). Decision: the frontend code
+references media by same-origin absolute paths (`/landing/*.mp4|webp|jpg|png`, `/labels/*.png`, `/audio/*`, `/icons/*`),
+so we move the files into SeaweedFS WITHOUT touching the frontend:
+- service `seaweedfs` (chrislusf/seaweedfs, pinned tag, `server -dir=/data -s3 -s3.port=8333 -master.volumePreallocate=false
+  -master.volumeSizeLimitMB=…`, volume `seaweed_data`, healthcheck on 127.0.0.1:9333/cluster/status), not published.
+- bucket `media`; `deploy/seaweedfs/s3.json`: identity `media-writer` (Read/Write/List on media, keys from env),
+  `anonymous` with `Read:media` only (these are public site assets).
+- one-shot `media-sync` service (like migrate): uploads `vendor/frontend/web/static/{landing,labels,audio,icons}` into
+  `media/<same path>` with correct Content-Type and `Cache-Control`, idempotent (skips unchanged by md5/ETag), deletes
+  objects no longer in the source (`--prune`). caddy depends on it.
+- Caddy: `/landing/*`, `/labels/*`, `/audio/*`, `/icons/*` -> rewrite to `/media{path}` -> reverse_proxy seaweedfs:8333
+  (anonymous GET, no SigV4, so the prefix rewrite is safe; Range passes through for video). The web image no longer
+  contains these files (removed after the build), so SeaweedFS is the only source.
+- Fonts stay in the web build (tiny, CSS-critical).
+
+### S15 as built
+
+- Compose: `seaweedfs` (`chrislusf/seaweedfs:3.68`, `server -s3`, `-master.volumePreallocate=false`, `-volume.max=20`, volume
+  `seaweed_data`, `mem_limit` 512m, healthcheck = master `/cluster/status` AND the S3 gateway answering; cold start takes ~25 s for the
+  raft election) and `media-sync` (`deploy/media-sync/Dockerfile` = python:3.12-slim + boto3; `scripts/media_sync.py` and the
+  static dir are mounted read-only, so no rebuild when either changes). `caddy` depends on `media-sync: service_completed_successfully`.
+- Identities: SeaweedFS only reads `s3.json` from a file, so `deploy/seaweedfs/s3.json` is a template (`${MEDIA_S3_ACCESS_KEY}`...) and
+  `deploy/seaweedfs/entrypoint.sh` renders `/tmp/s3.json` from the env at start (keys validated to `[A-Za-z0-9_-]`, >= 8 chars; the
+  secret never lands in git). `media-writer` has `Admin:media`, `Read/Write/List:media` (Admin is needed to create the bucket, scoped to
+  that one bucket); `anonymous` has `Read:media` only. Verified: anonymous PUT / DELETE / list answer 403.
+- Caddy: `rewrite * /media{path}` -> `reverse_proxy seaweedfs:8333` (`Host` set to the upstream). Only GET/HEAD (others 405). Query: only
+  the client's cache-buster `?v=<rev>` (icons/buildings.png) is allowed; any other query would reach S3 as a sub-resource (`?tagging`,
+  `?uploads`...), so it is a 404. S3 400/403/404/501 -> plain `404 not found` (no XML). Cache-Control / Content-Type / ETag / Range come
+  from the stored object (`public, max-age=86400`, not immutable: the files are not content-hashed). `/landing` (no trailing slash,
+  the prerendered page) is still the SPA/`landing.html`; `/landing/` is media.
+- Web image: `web/Dockerfile` deletes `build/{landing,labels,audio,icons}` after the build and asserts `landing.html`, `index.html`,
+  `fonts/` are still there; the image is the app only, SeaweedFS the single source of the media.
+- `/ready`: `checks.media` = HEAD of `MEDIA_URL`/audio/samples.json (`MEDIA_URL=http://seaweedfs:8333/media` in compose; empty ->
+  `skipped`). It is NOT in `CODE_ORDER`: a media outage is visible there but never makes readiness fail (verified by stopping seaweedfs:
+  `/ready` 200, `/play`, `/api/bootstrap` fine, media 502).
+- Trade-off to know: because `caddy` waits for `media-sync` at `up`, a SeaweedFS that cannot start also blocks a fresh `up` of caddy
+  (the running stack is unaffected). Drop that `depends_on` entry if you prefer the site to come up without media.
+- Tests: `e2e/test_s15_media.py` (every file byte-identical with the right Content-Type through Caddy, Range 206 on the five videos, 404 /
+  405 / query rules, caddy image has no media, media-sync idempotent + prune, anonymous cannot write, `E2E_DOCKER=1` seaweedfs-down test,
+  unit tests of the script against a fake S3), `api/tests/test_health.py` (media check).

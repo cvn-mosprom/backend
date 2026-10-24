@@ -121,7 +121,7 @@ cp .env.example .env                                  # dev defaults: APP_ENV=de
 SIM_COMMIT=$(scripts/simcommit.sh) docker compose up -d --build
 docker compose ps                                     # everything healthy; `migrate` exits 0
 curl -k https://localhost/health                      # caddy -> api  (-k: caddy's local CA for DOMAIN=localhost)
-curl -k https://localhost/ready                       # db, migrations, redis, sim, config checks
+curl -k https://localhost/ready                       # db, migrations, redis, sim, config checks (+ media, informational)
 ```
 
 PowerShell: `$env:SIM_COMMIT = (git -C vendor/frontend rev-parse --short HEAD); docker compose up -d --build`.
@@ -132,12 +132,14 @@ Local auth: header `X-Dev-User: 123` or `Authorization: dev 123:Ivan` (only whil
 
 | Service | Role | Host access |
 |---|---|---|
-| `caddy` | TLS (automatic HTTPS), gzip/zstd, serves the Mini App web build (`web/Dockerfile`), proxies `/api/*`, `/health`, `/ready` to `api:8000` | `80`, `443` (`HTTP_PORT`/`HTTPS_PORT` in `.env`) |
+| `caddy` | TLS (automatic HTTPS), gzip/zstd, serves the Mini App web build (`web/Dockerfile`), proxies `/api/*`, `/health`, `/ready` to `api:8000` and `/landing`, `/labels`, `/audio`, `/icons` to SeaweedFS | `80`, `443` (`HTTP_PORT`/`HTTPS_PORT` in `.env`) |
 | `api` | FastAPI, `API_WORKERS` (2) uvicorn workers | internal `:8000` |
 | `migrate` | one-shot `alembic upgrade head`, `api` waits for it | - |
 | `db` | `postgres:16-alpine`, volume `pgdata` | `127.0.0.1:55432` (`mosprom`/`mosprom`) |
 | `redis` | `redis:7-alpine`, caches and rate-limit counters only, no persistence | `127.0.0.1:56379` |
 | `sim` | game simulation, `/health` reports `simCommit` | internal `:8080`, `127.0.0.1:58080` for debugging |
+| `seaweedfs` | S3 store for the site media (`chrislusf/seaweedfs:3.68`, volume `seaweed_data`), anonymous read-only bucket `media` | internal `:8333` |
+| `media-sync` | one-shot: uploads `vendor/frontend/web/static/{landing,labels,audio,icons}` into `media/` (idempotent, prunes), `caddy` waits for it | - |
 | `bot` | aiogram + scheduler; idles (no crash loop) while `BOT_TOKEN` is empty | - |
 
 Optional profiles:
@@ -155,6 +157,17 @@ For local port conflicts, change `HTTP_PORT`/`HTTPS_PORT` in `.env`.
 * **Backups.** `docker compose --profile backup up -d backup` dumps the database (`pg_dump -Fc`) into `./backups` right away and
   then every `BACKUP_INTERVAL_H` (6) hours, keeping the newest `BACKUP_KEEP` (28). By hand: `sh scripts/backup.sh`.
   Restore (stops api + bot, safety dump first, runs the migrations afterwards): `sh scripts/restore.sh backups/<file>.dump`.
+* **Media (SeaweedFS).** The big static assets (landing videos/images, product labels, audio samples, icons: ~7 MB, 85 files) are not in
+  the web image; Caddy serves `/landing/*`, `/labels/*`, `/audio/*`, `/icons/*` from SeaweedFS (bucket `media`, same relative path,
+  anonymous read-only, Range works for video). `media-sync` fills it on every `docker compose up` (`caddy` waits for it) and is idempotent:
+  files whose md5 and headers are unchanged are skipped. After a submodule bump (`git submodule update`) re-sync without a restart:
+  `docker compose run --rm media-sync` (prints `uploaded=N unchanged=M deleted=K`; removed files are pruned, `MEDIA_SYNC_PRUNE=0`
+  disables pruning; it refuses to run on an empty source, so an unchecked-out submodule cannot wipe the bucket). The web image itself
+  only needs a rebuild when the app code changes. Credentials: `MEDIA_S3_ACCESS_KEY` / `MEDIA_S3_SECRET_KEY` (`.env.example`; used only
+  inside the compose network; `deploy/seaweedfs/s3.json` is a template filled from them by `deploy/seaweedfs/entrypoint.sh`).
+  A media outage does not take the game down: `/ready` shows `checks.media: "error: ..."` but stays 200, media URLs answer 502.
+  **Backup:** the media are reproducible from the repo (`media-sync` rebuilds the bucket from the submodule), so there is nothing
+  to back up; if you ever store anything else in SeaweedFS, snapshot the volume (`docker run --rm -v mosprom_seaweed_data:/data -v "$PWD/backups":/b alpine tar czf /b/seaweed.tgz -C /data .`, stop `seaweedfs` first for a consistent copy).
 * **Internal token.** `INTERNAL_TOKEN` is shared by api and bot (`/internal/*`, header `X-Internal-Token`). The dev placeholder
   works only with `APP_ENV=dev`; the api refuses to start with `APP_ENV=prod` unless it is a real secret (`openssl rand -hex 24`).
 * **Workers.** Configure API workers, DB pools and `SIM_WORKERS` together with CPU/RAM. `SIM_WORKERS` accepts integers 0..256; 0 is a debugging mode. Production settings and connection budgets are maintained in deploy.

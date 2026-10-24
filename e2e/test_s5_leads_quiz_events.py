@@ -173,7 +173,12 @@ def test_revoke_is_idempotent_and_leaves_the_funnel(api: Api):
     assert api.http.delete("/api/leads/me").status_code == 204
     assert sql(f"SELECT consent_revoked_at FROM leads WHERE user_id = {uid}") == first
     assert sql(f"SELECT kind FROM outbox WHERE payload->>'user_id' = '{uid}' ORDER BY id") == "lead_created\nlead_revoked"
-    assert api.http.get("/api/leads/me").json()["consentRevokedAt"] is not None
+    gone = api.http.get("/api/leads/me")  # forgotten for the owner, the row stays for the audit
+    assert gone.status_code == 404 and gone.json()["error"]["code"] == "lead_not_found"
+    assert sql(f"SELECT count(*) FROM leads WHERE user_id = {uid}") == "1"
+    again = post(api, "/api/leads", lead_body(fullName="Новая Анкета"))  # a revoked form does not block a new one
+    assert again.status_code == 201 and api.http.get("/api/leads/me").json()["id"] == again.json()["id"]
+    assert sql(f"SELECT count(*) FROM leads WHERE user_id = {uid}") == "2"
 
 
 def test_lead_rate_limit_is_5_per_minute(api: Api):

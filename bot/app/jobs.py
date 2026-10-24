@@ -9,6 +9,9 @@ default http://api:8000): the bot never touches factory state itself. Every job 
 api, a wrong token or a timeout must never stop the scheduler); ``max_instances=1`` and ``coalesce=True`` so a slow run
 never piles up.
 
+C1 adds ``achievements_recompute`` every 10 minutes: ``POST /internal/achievements/recompute`` in batches of 200 (the rules that
+need the shifts / quiz / season tables; the per-command rules run inside the api).
+
 Planned entries (sprints S6-S7):
 
 * order reminders (``order_reminders``, 5 min, app/player/reminders.py) and the 5xx alert (``alert_5xx``, 1 min,
@@ -87,6 +90,11 @@ def set_api(api: InternalApi | None) -> None:
     _api = api
 
 
+def get_api(settings: Settings | None = None) -> InternalApi:
+    """The injected client (tests) or the one built from the env / the given settings."""
+    return _api or InternalApi.from_env(settings)
+
+
 async def call_internal(job: str, path: str, payload: dict[str, Any] | None = None,
                         timeout_s: float = 60) -> dict[str, Any] | None:
     """One internal call of a job: returns the JSON answer, or None after logging why it failed. Never raises
@@ -131,6 +139,32 @@ async def bots_grow() -> dict[str, Any] | None:
     return result
 
 
+ACHIEVEMENT_BATCH = 200  # players per call
+ACHIEVEMENT_MAX_CALLS = 20  # per run: 4000 players; the rest follows on the next run (the api resumes by "due" players)
+
+
+async def achievements_recompute() -> dict[str, Any] | None:
+    """Full achievement evaluation (shift, quiz and season rules the per-command hook does not run) of the players that changed
+    since their last one. Calls the api in batches of 200 following ``remaining`` / ``next_after``; None when the first call failed."""
+    total: dict[str, Any] = {"evaluated": 0, "granted": 0, "failed": 0, "calls": 0}
+    after = 0
+    for _ in range(ACHIEVEMENT_MAX_CALLS):
+        r = await call_internal("achievements_recompute", "/internal/achievements/recompute",
+                                {"limit": ACHIEVEMENT_BATCH, "after": after}, timeout_s=120)
+        if r is None:
+            return total if total["calls"] else None
+        total["calls"] += 1
+        for k in ("evaluated", "granted", "failed"):
+            total[k] += int(r.get(k) or 0)
+        after = int(r.get("next_after") or after)
+        if not r.get("remaining"):
+            break
+    if total["evaluated"] or total["failed"]:
+        log.log(logging.WARNING if total["failed"] else logging.INFO, "achievements_recompute: evaluated=%s granted=%s failed=%s calls=%s",
+                total["evaluated"], total["granted"], total["failed"], total["calls"])
+    return total
+
+
 JOBS: tuple[JobSpec, ...] = (
     JobSpec("seasons_rotate", seasons_rotate, "interval", {"minutes": 1}, "season rotation (close / open)"),
     JobSpec("top_advance", top_advance, "interval", {"minutes": 12, "jitter": 90}, "top-200 background catch-up"),
@@ -140,6 +174,9 @@ JOBS: tuple[JobSpec, ...] = (
     # S6 player side (both do nothing without BOT_TOKEN): order reminders for opted-in players, 5xx alert for the HR admins
     JobSpec("order_reminders", order_reminders, "interval", {"minutes": 5, "jitter": 20}, "order reminders (opted-in players)"),
     JobSpec("alert_5xx", alert_5xx, "interval", {"minutes": 1}, "5xx alert (>20% of 10 min) to HR admins"),
+    # C1: full achievement evaluation (shift / quiz / season rules) for the players that changed
+    JobSpec("achievements_recompute", achievements_recompute, "interval", {"minutes": 10, "jitter": 30},
+            "achievements full recompute (batches)"),
 )
 
 

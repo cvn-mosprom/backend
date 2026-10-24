@@ -9,7 +9,7 @@ permissions:
   packages: read
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/infra/') }}
 jobs:
   security:
     uses: ./.github/workflows/security.yml

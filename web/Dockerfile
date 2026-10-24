@@ -19,6 +19,7 @@ ARG ROUTING_ZONE
 ARG REGIONAL_ROUTING=1
 ARG VITE_TG_APP_URL=
 ARG VITE_HR_DEMO=0
+ARG EXTERNAL_MEDIA=0
 ENV VITE_FRONTEND_REVISION=${FRONTEND_REVISION} \
     VITE_ROUTING_ZONE=${ROUTING_ZONE} \
     VITE_REGIONAL_ROUTING=${REGIONAL_ROUTING} \
@@ -38,7 +39,8 @@ RUN pnpm run build && node /tmp/generate-csp.mjs /app/build /tmp/content-securit
 # S15: the site media are served from SeaweedFS (compose: seaweedfs + media-sync; Caddyfile: /landing /labels /audio /icons ->
 # /media/...). Drop them from the output so the image carries only the app and SeaweedFS is the single source. The prerendered
 # page build/landing.html is a FILE next to the build/landing/ media dir and stays. Fonts stay (tiny, CSS-critical).
-RUN rm -rf build/landing build/labels build/audio build/icons  && test -f build/landing.html && test -f build/index.html && test -d build/fonts
+RUN if [ "$EXTERNAL_MEDIA" = "1" ]; then rm -rf build/landing build/labels build/audio build/icons; fi \
+    && test -f build/landing.html && test -f build/index.html && test -d build/fonts
 
 # Rebuild the upstream Caddy command with patched Go and the reviewed module lock.
 FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS caddy-build

@@ -79,6 +79,8 @@ services:
     build:
       context: . # repo root: the image bundles vendor/frontend/web (web/Dockerfile.dockerignore)
       dockerfile: web/Dockerfile
+      args:
+        EXTERNAL_MEDIA: "1"
     image: mosprom-caddy:${WEB_TAG:-dev}
     restart: unless-stopped
     mem_limit: 256m

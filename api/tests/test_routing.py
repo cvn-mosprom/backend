@@ -21,7 +21,7 @@ async def test_probe_supports_browser_cors_without_telegram_auth(make_client):
 
 @pytest.mark.asyncio
 async def test_old_frontend_cannot_mutate_new_release(make_client):
-    client = await make_client(app_env="prod", frontend_revision="current", internal_token="valid-internal-secret-0123456789")
+    client = await make_client(app_env="prod", frontend_revision="current", internal_token="routing-test-" + "x" * 32)
     for headers in ({}, {"X-Frontend-Revision": "old"}):
         response = await client.post("/api/command", json={}, headers=headers)
         assert response.status_code == 426

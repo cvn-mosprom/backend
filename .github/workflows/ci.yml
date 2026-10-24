@@ -50,10 +50,13 @@ jobs:
       - run: bot/.venv/bin/pip install --require-hashes -r bot/requirements-dev.lock
       - run: api/.venv/bin/ruff check --select E9,F63,F7,F82 api/app bot/app
       - run: api/.venv/bin/bandit -r api/app bot/app -ll
+      - name: Web bootstrap CSP allowlist
+        run: node --test web/generate-csp.test.mjs
       - name: Typecheck test and bundle simulator
         run: |
           cd sim
           npm ci
+          npm audit --audit-level=high
           npm run check
           node dist/server.mjs > "$RUNNER_TEMP/sim.log" 2>&1 &
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/health && break; sleep 1; done
@@ -72,6 +75,7 @@ jobs:
         run: |
           sh contract/check.sh
           cd contract
+          npm audit --audit-level=high
           .venv/bin/pytest -q --junitxml=results.xml
           .venv/bin/python ../tools/check_pytest.py results.xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

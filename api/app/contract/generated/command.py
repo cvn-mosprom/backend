@@ -2,7 +2,6 @@
 # Source: vendor/frontend/web/src/lib/api/types.ts (ts-json-schema-generator -> datamodel-code-generator).
 # Regenerate with: contract/generate.sh   |   Drift check: contract/check.sh
 
-
 from __future__ import annotations
 
 from typing import Annotated, Literal

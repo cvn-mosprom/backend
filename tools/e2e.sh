@@ -22,12 +22,14 @@ export SIM_COMMIT
 SIM_COMMIT="$(git rev-parse HEAD:vendor/frontend)"
 docker compose up -d --build --wait --wait-timeout 300
 export E2E_BASE E2E_DOCKER=1 E2E_BOT_TOKEN=123456:TEST-BOT-TOKEN
-E2E_BASE="http://$(docker compose port caddy 80)"
+published="$(docker compose port caddy 80)"
+E2E_BASE="http://localhost:${published##*:}"
 python -m venv e2e/.venv
 e2e/.venv/bin/pip install --require-hashes -r e2e/requirements.lock
 (
   cd e2e/client
   npm ci
+  npm audit --audit-level=high
   npm run typecheck
 )
 e2e/.venv/bin/python -m pytest e2e -q --junitxml=e2e/results.xml

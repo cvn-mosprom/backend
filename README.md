@@ -94,7 +94,7 @@ instantly (circuit breaker). `docker compose start sim` - it heals by itself wit
 **Reliability (S7).** DB statement timeout 3 s and lock timeout 2 s (`503 db_unavailable`), sim timeout 3 s, whole request 5 s
 (`503 timeout` + `Retry-After: 1`; `/internal/*` exempt), requests over 1 s are logged at WARNING with `duration_ms`, sim circuit
 breaker (5 consecutive failures, fail fast for 10 s, then one probe; state in the logs as `breaker_state`), JSON logs with
-`request_id`, `restart: unless-stopped` everywhere, bounded workers (`API_WORKERS`, `SIM_WORKERS` <= 4), optional DB backups
+`request_id`, `restart: unless-stopped` everywhere, explicit workers (`API_WORKERS`, `SIM_WORKERS`) matched to CPU/RAM and database capacity, optional DB backups
 (see Operations). The knobs are listed in `.env.example`.
 
 **Where the tests are.** `api/tests` (pytest: every endpoint, error codes, idempotency, concurrency, breaker, timeouts; needs the
@@ -147,9 +147,8 @@ Optional profiles:
 * `sim-replicas`: `docker compose --profile sim-replicas up -d` adds a second sim container behind the same DNS name `sim`.
 * `backup`: periodic `pg_dump` into `./backups` (see Operations).
 
-Production: set a real `DOMAIN` (DNS A record to the host, ports 80/443 open), `APP_ENV=prod`, `DEV_AUTH=0`, a real `BOT_TOKEN`,
-`WEBAPP_URL=https://<DOMAIN>/`, strong `POSTGRES_PASSWORD`. Telegram opens a Mini App only over HTTPS on a real domain. Port 80/443 busy on Windows?
-Change `HTTP_PORT`/`HTTPS_PORT` in `.env`. Reset everything including data: `docker compose down -v`.
+The Compose stack above is for development and isolated E2E. For staging and production use the separate [deploy repository](https://github.com/cvn-mosprom/deploy), its preflight, restricted database roles, immutable releases and recovery runbook. Telegram opens a Mini App only over HTTPS on a real domain.
+For local port conflicts, change `HTTP_PORT`/`HTTPS_PORT` in `.env`.
 
 ### Operations
 
@@ -219,3 +218,5 @@ flowchart LR
 ```
 
 Результаты локальных и моделируемых проверок, а также невыполненные испытания реальных площадок: [VALIDATION](https://github.com/cvn-mosprom/deploy/blob/main/VALIDATION.md).
+
+Локально пройдены 811 API-, 105 bot-, 200 контрактных, 104 sim- и 251 Docker E2E-сценарий. Это испытания изолированного стенда; реальные географические площадки, Patroni failover и PITR ещё требуют приёмки. Trivy блокирует выпуск из-за High-находок в базовых Python/Caddy-образах; исключения для них не добавлены.

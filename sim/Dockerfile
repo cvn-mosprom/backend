@@ -25,6 +25,9 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     SIM_WORKERS=2 \
     SIM_COMMIT=${SIM_COMMIT}
+# Runtime is a standalone bundle: package managers are unnecessary attack surface.
+RUN rm -rf /usr/local/lib/node_modules /opt/yarn-* \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 COPY --from=build --chown=node:node /repo/sim/dist/server.mjs /repo/sim/dist/server.mjs.map ./
 USER node

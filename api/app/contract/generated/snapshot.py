@@ -2,7 +2,6 @@
 # Source: vendor/frontend/web/src/lib/api/types.ts (ts-json-schema-generator -> datamodel-code-generator).
 # Regenerate with: contract/generate.sh   |   Drift check: contract/check.sh
 
-
 from __future__ import annotations
 
 from typing import Literal
@@ -52,10 +51,12 @@ class Collection(BaseModel):
     street_05: float | None = None
 
 
-LastShipped = Collection
+class LastShipped(Collection):
+    pass
 
 
-Shipped = Collection
+class Shipped(Collection):
+    pass
 
 
 class Coolcola05(BaseModel):
@@ -67,25 +68,32 @@ class Coolcola05(BaseModel):
     pallets: float
 
 
-Fancy05 = Coolcola05
+class Fancy05(Coolcola05):
+    pass
 
 
-KvasOchakovsky15 = Coolcola05
+class KvasOchakovsky15(Coolcola05):
+    pass
 
 
-KvasOchakovskyCan = Coolcola05
+class KvasOchakovskyCan(Coolcola05):
+    pass
 
 
-KvasSemeyny15 = Coolcola05
+class KvasSemeyny15(Coolcola05):
+    pass
 
 
-LemonadeDuchess15 = Coolcola05
+class LemonadeDuchess15(Coolcola05):
+    pass
 
 
-LemonadeTarhun15 = Coolcola05
+class LemonadeTarhun15(Coolcola05):
+    pass
 
 
-Street05 = Coolcola05
+class Street05(Coolcola05):
+    pass
 
 
 class Stock(BaseModel):
@@ -148,7 +156,8 @@ class LoanLogEntry(BaseModel):
     t: float
 
 
-ProducedBoxes = Collection
+class ProducedBoxes(Collection):
+    pass
 
 
 class OfflineReport(BaseModel):
@@ -172,7 +181,8 @@ class Boost(BaseModel):
     until: float
 
 
-Stock1 = Collection
+class Stock1(Collection):
+    pass
 
 
 class Player(BaseModel):
@@ -212,22 +222,28 @@ class Adjuster(BaseModel):
     wins: float
 
 
-Forklift = Adjuster
+class Forklift(Adjuster):
+    pass
 
 
-Kipia = Adjuster
+class Kipia(Adjuster):
+    pass
 
 
-Kvasovar = Adjuster
+class Kvasovar(Adjuster):
+    pass
 
 
-Lab = Adjuster
+class Lab(Adjuster):
+    pass
 
 
-Operator = Adjuster
+class Operator(Adjuster):
+    pass
 
 
-Storekeeper = Adjuster
+class Storekeeper(Adjuster):
+    pass
 
 
 class ByProfession(BaseModel):
@@ -296,7 +312,8 @@ class Effects(BaseModel):
     minQuality: float | None = None
     priceMult: float | None = None
     sku: (
-        str
+        Literal['kvas_all']
+        | Literal['lemonade_all']
         | Literal[
             'kvas_ochakovsky_15',
             'lemonade_tarhun_15',

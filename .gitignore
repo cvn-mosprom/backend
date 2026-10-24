@@ -11,3 +11,9 @@ dist/
 .idea/
 .vscode/
 backups/
+.claude/
+
+# CI reports
+results.xml
+coverage.xml
+.coverage

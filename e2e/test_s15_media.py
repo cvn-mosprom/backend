@@ -88,7 +88,7 @@ def test_cache_buster_query_is_fine_other_queries_are_not(web):
 
 def test_missing_media_is_a_plain_404_not_s3_xml_nor_the_spa(web):
     for path in ("/landing/nope.png", "/labels/pixel/missing_6.png", "/audio/nope.bin", "/icons/nope.json",
-                 "/landing/", "/labels/", "/audio/", "/icons/", "/labels/pixel/"):
+                 "/labels/", "/audio/", "/icons/", "/labels/pixel/"):
         r = web.get(path)
         assert r.status_code == 404 and r.text.strip() == "not found", (path, r.status_code, r.text[:80])
         assert "xml" not in r.headers["content-type"] and "SeaweedFS" not in r.headers.get("server", "")
@@ -101,9 +101,9 @@ def test_media_is_read_only_through_caddy(web):
 
 
 def test_the_spa_and_other_routes_are_unaffected(web):
-    for path in ("/", "/landing", "/play", "/privacy", "/fonts/ToshibaSat_8x14.woff"):
+    for path in ("/", "/app", "/play", "/privacy", "/fonts/ToshibaSat_8x14.woff"):
         assert web.get(path).status_code == 200, path
-    r = web.get("/landing")
+    r = web.get("/")
     assert r.headers["content-type"].startswith("text/html")  # prerendered page, not the media prefix
     assert web.get("/internal").status_code == 404 and web.get("/internal/x").status_code == 404
     assert web.get("/health").json()["status"] == "ok"
@@ -146,7 +146,7 @@ def test_caddy_image_does_not_contain_the_media():
     ls = compose("exec", "-T", "caddy", "ls", "/srv")
     assert ls.returncode == 0
     names = ls.stdout.split()
-    assert {"index.html", "landing.html", "fonts", "_app"} <= set(names) and not set(DIRS) & set(names), names
+    assert {"index.html", "200.html", "fonts", "_app"} <= set(names) and not set(DIRS) & set(names), names
 
 
 # ---------------------------------------------------------------- media-sync (against the live SeaweedFS)

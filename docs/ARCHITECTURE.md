@@ -191,7 +191,7 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
   `"slow request"` at WARNING with `duration_ms` and `slow: true`.
 - **INTERNAL_TOKEN** (api + bot; `API_INTERNAL_URL=http://api:8000` for the bot): `APP_ENV=prod` needs >= 16 chars and not a placeholder -
   otherwise the api raises at startup (lifespan) and `/ready` lists `INTERNAL_TOKEN` as missing (`config_error`). Caddy answers 404 for `/internal/*`.
-- **Compose:** `API_WORKERS` -> uvicorn `WEB_CONCURRENCY` (default 2, keep <= 4), `mem_limit`s, profile `backup` (`scripts/backup.sh` loop,
+- **Compose:** `API_WORKERS` -> uvicorn `WEB_CONCURRENCY` (default 2, match CPU/RAM and database pool capacity), `mem_limit`s, profile `backup` (`scripts/backup.sh` loop,
   `scripts/restore.sh`), `restart: unless-stopped` on every long-running service. E2E: `e2e/test_s7_resilience.py` (`E2E_DOCKER=1`).
 
 ## S4 decisions (part B: season rotation, internal jobs)

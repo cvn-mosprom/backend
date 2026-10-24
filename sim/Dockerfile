@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 #
 # Sim service image. BUILD CONTEXT IS THE REPO ROOT (it needs vendor/frontend/web/src/lib next to sim/):
 #
@@ -10,7 +9,7 @@
 # The vendored lib is bundled into a single dist/server.mjs with esbuild, so the runtime stage has no node_modules and
 # no vendor sources: only node + the bundle.
 
-FROM node:22-alpine AS build
+FROM docker.io/library/node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS build
 WORKDIR /repo/sim
 COPY sim/package.json sim/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -19,13 +18,16 @@ COPY vendor/frontend/web/src/lib /repo/vendor/frontend/web/src/lib
 COPY sim/ ./
 RUN npm run build
 
-FROM node:22-alpine
+FROM docker.io/library/node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 ARG SIM_COMMIT=unknown
 ENV NODE_ENV=production \
     PORT=8080 \
     HOST=0.0.0.0 \
     SIM_WORKERS=2 \
     SIM_COMMIT=${SIM_COMMIT}
+# Runtime is a standalone bundle: package managers are unnecessary attack surface.
+RUN rm -rf /usr/local/lib/node_modules /opt/yarn-* \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 COPY --from=build --chown=node:node /repo/sim/dist/server.mjs /repo/sim/dist/server.mjs.map ./
 USER node

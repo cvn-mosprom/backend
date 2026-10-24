@@ -35,7 +35,8 @@ from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .. import quiz_bank
-from ..models import AchievementEarned, AchievementProgress, Factory, LeadEvent, Outbox, User
+from ..models import (AchievementEarned, AchievementProgress, Factory, LeadEvent, Outbox, PlayerScore, QuizAnswer, SeasonResult,
+                      User)
 from . import catalog as cat
 from . import scores as scoring
 from .engine import evaluate, professions
@@ -86,9 +87,11 @@ async def gather_aggregates(session: AsyncSession, user_ids: list[int], *, shift
             "SELECT user_id, profession, count(*) AS played, count(*) FILTER (WHERE result = 'win') AS wins, "
             "avg(score)::float8 AS avg_score, "
             "count(*) FILTER (WHERE (CASE WHEN jsonb_typeof(metrics->'reaction_ms') = 'number' "
-            "THEN (metrics->>'reaction_ms')::float8 END) < " + str(cat.FAST_REACTION_MS) + ") AS fast, "
-            "count(*) FILTER (WHERE result = 'win' AND score >= " + str(cat.PERFECT_SCORE) + ") AS perfect "
-            "FROM shifts WHERE user_id = ANY(:ids) GROUP BY user_id, profession").bindparams(ids))
+            "THEN (metrics->>'reaction_ms')::float8 END) < :fast_reaction_ms) AS fast, "
+            "count(*) FILTER (WHERE result = 'win' AND score >= :perfect_score) AS perfect "
+            "FROM shifts WHERE user_id = ANY(:ids) GROUP BY user_id, profession").bindparams(
+                ids, sa.bindparam("fast_reaction_ms", cat.FAST_REACTION_MS, type_=sa.Float),
+                sa.bindparam("perfect_score", cat.PERFECT_SCORE, type_=sa.REAL)))
         for r in rows:
             s = out[r.user_id]["shifts"]
             s["by_profession"][r.profession] = {"played": r.played, "wins": r.wins, "avg_score": r.avg_score}
@@ -353,23 +356,25 @@ async def recompute(sm: async_sessionmaker[AsyncSession], *, limit: int = 200, s
     that moment. -> {evaluated, failed, granted, points, unlocked: {id: n}, remaining, next_after, ms}."""
     t0 = time.perf_counter()
     started = datetime.now(timezone.utc)  # taken BEFORE reading, so a write during the batch makes the player due again
-    conds = ["NOT u.is_bot", "NOT u.is_test", "f.user_id > :after", "f.state <> '{}'::jsonb"]
-    params: dict[str, Any] = {"after": after, "lim": limit + 1}
+    sql = (sa.select(Factory.user_id).join(User, User.id == Factory.user_id)
+           .outerjoin(PlayerScore, sa.and_(PlayerScore.user_id == Factory.user_id,
+                                          PlayerScore.season_id == Factory.season_id))
+           .where(~User.is_bot, ~User.is_test, Factory.user_id > after, Factory.state != {}))
     if since is not None:
-        conds.append("f.updated_at >= :since")
-        params["since"] = since
+        sql = sql.where(Factory.updated_at >= since)
     if not force:
-        conds.append("(ps.evaluated_at IS NULL OR f.updated_at > ps.evaluated_at "
-                     "OR EXISTS (SELECT 1 FROM quiz_answers q WHERE q.user_id = f.user_id AND q.answered_at > ps.evaluated_at) "
-                     "OR EXISTS (SELECT 1 FROM season_results r WHERE r.user_id = f.user_id AND r.created_at > ps.evaluated_at))")
-    sql = text("SELECT f.user_id FROM factories f JOIN users u ON u.id = f.user_id "
-               "LEFT JOIN player_scores ps ON ps.user_id = f.user_id AND ps.season_id = f.season_id "
-               "WHERE " + " AND ".join(conds) + " ORDER BY f.user_id LIMIT :lim")
+        sql = sql.where(sa.or_(
+            PlayerScore.evaluated_at.is_(None), Factory.updated_at > PlayerScore.evaluated_at,
+            sa.exists().where(QuizAnswer.user_id == Factory.user_id,
+                              QuizAnswer.answered_at > PlayerScore.evaluated_at),
+            sa.exists().where(SeasonResult.user_id == Factory.user_id,
+                              SeasonResult.created_at > PlayerScore.evaluated_at)))
+    sql = sql.order_by(Factory.user_id).limit(limit + 1)
     unlocked_count: Counter[str] = Counter()
     summary: dict[str, Any] = {"evaluated": 0, "failed": 0, "granted": 0, "points": 0, "remaining": False, "next_after": after}
     try:
         async with sm() as session, session.begin():
-            ids = [r[0] for r in await session.execute(sql, params)]
+            ids = [r[0] for r in await session.execute(sql)]
             summary["remaining"] = len(ids) > limit
             ids = ids[:limit]
             summary["next_after"] = ids[-1] if ids else after

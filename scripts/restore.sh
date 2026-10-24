@@ -11,7 +11,10 @@ set -eu
 cd "$(dirname "$0")/.."
 
 FILE=${1:-}
-[ -n "$FILE" ] && [ -f "$FILE" ] || { echo "usage: sh scripts/restore.sh <backups/file.dump> [--yes]" >&2; exit 2; }
+if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
+    echo "usage: sh scripts/restore.sh <backups/file.dump> [--yes]" >&2
+    exit 2
+fi
 TARGET=${RESTORE_DB:-}
 
 if [ "${2:-}" != "--yes" ]; then

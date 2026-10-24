@@ -22,7 +22,7 @@ app_log = logging.getLogger("mosprom.app")
 
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_id", default=None)
 _RID_OK = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-QUIET_PATHS = {"/health", "/ready"}  # probes: DEBUG unless they fail
+QUIET_PATHS = {"/health", "/ready", "/routing/ping", "/metrics"}  # probes: DEBUG unless they fail
 NO_TIMEOUT_PREFIXES = ("/internal/",)  # long background calls (top-200 catch-up, season rotation): no 5 s cap
 
 
@@ -135,11 +135,24 @@ class RequestContextMiddleware:
         access_log.log(level, "slow request" if slow else "request", extra={"fields": {
             **extra,
             "request_id": rid,
-            "user_id": state.get("user_id"),
-            "tg_id": state.get("tg_id"),
             "method": scope.get("method"),
             "path": path,
             "status": status,
             "error_code": state.get("error_code"),
             "duration_ms": duration_ms,
         }})
+
+
+class RevisionGuard:
+    """Pure ASGI: preserves response framing, compression and exception semantics."""
+    def __init__(self, app: ASGIApp, revision: str = ""):
+        self.app = app
+        self.revision = revision
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if (scope["type"] == "http" and self.revision and scope.get("path", "").startswith("/api/")
+                and Headers(scope=scope).get("x-frontend-revision") != self.revision):
+            scope.setdefault("state", {})["error_code"] = "client_update_required"
+            await error_response("client_update_required", "Обновите игру для подключения к новой версии", 426)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)

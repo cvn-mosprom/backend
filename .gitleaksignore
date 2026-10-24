@@ -1,0 +1,3 @@
+# Owner: Denis Shipilov; reason: Synthetic test-only internal token, never used by deployments; source now constructs the fixture.
+# Review expires: 2026-11-24; remove if the detector rule no longer reports this exact historical finding.
+44aa88c324aa8d1fb2746788ceb1f55b1ba0d17e:api/tests/test_routing.py:generic-api-key:24

@@ -7,3 +7,8 @@ vendor/frontend/web/.svelte-kit
 vendor/frontend/web/build
 vendor/frontend/web/docs
 vendor/frontend/web/tools
+
+!web/generate-csp.mjs
+
+!web/caddy/go.mod
+!web/caddy/go.sum

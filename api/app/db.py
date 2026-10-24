@@ -4,9 +4,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
+import ssl
 
 import orjson
 import redis.asyncio as aioredis
+from redis.asyncio.sentinel import Sentinel
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -22,6 +24,8 @@ def connect_args(settings: Settings, timeouts: bool = True) -> dict[str, Any]:
     bound is enforced client-side with asyncpg's `command_timeout` (cancels the running query on the server) and,
     in the pgbouncer container, by its own `QUERY_TIMEOUT` (see docker-compose.yml)."""
     args: dict[str, Any] = {"timeout": settings.db_connect_timeout_s}
+    if settings.db_tls:
+        args["ssl"] = ssl.create_default_context(cafile=settings.db_ca_file)
     if timeouts and settings.db_statement_timeout_ms > 0:
         if settings.pgbouncer:
             args["command_timeout"] = settings.db_statement_timeout_ms / 1000
@@ -62,6 +66,14 @@ def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 def make_redis(settings: Settings) -> aioredis.Redis:
     # short timeouts: Redis is an optimisation layer (limiter / auth cache) and must fail fast
+    if settings.redis_sentinel_nodes:
+        nodes = [(host, int(port)) for host, port in
+                 (node.strip().rsplit(":", 1) for node in settings.redis_sentinel_nodes.split(","))]
+        security = {"ssl": True, "ssl_ca_certs": settings.redis_ca_file} if settings.redis_tls else {}
+        sentinel = Sentinel(nodes, socket_connect_timeout=0.5, socket_timeout=1.0,
+                            decode_responses=True, sentinel_kwargs={**security, "password": settings.redis_sentinel_password or None,
+                                                                  "socket_connect_timeout": 0.5, "socket_timeout": 1.0})
+        return sentinel.master_for(settings.redis_master_name, password=settings.redis_password or None, **security)
     return aioredis.from_url(
         settings.redis_url, decode_responses=True,
         socket_connect_timeout=0.5, socket_timeout=1.0, health_check_interval=30,

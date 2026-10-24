@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
+FROM docker.io/library/python:3.12-alpine3.24@sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -13,7 +13,7 @@ RUN pip install --require-hashes -r requirements.lock
 
 COPY app ./app
 
-RUN useradd --system --uid 10002 --no-create-home bot
+RUN addgroup -g 10002 bot && adduser -D -H -u 10002 -G bot bot
 USER bot
 
 # Without BOT_TOKEN the process idles (does not exit), so compose stays green locally.

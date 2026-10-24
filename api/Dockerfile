@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
+FROM docker.io/library/python:3.12-alpine3.24@sha256:b658b05ce9c4eb97ec6fc19424818a1f31993659c2b505a532f470e83807815d
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -18,7 +18,7 @@ COPY alembic ./alembic
 COPY app ./app
 COPY --chmod=755 entrypoint.sh ./entrypoint.sh
 
-RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+RUN addgroup -g 10001 app && adduser -D -H -u 10001 -G app app
 USER app
 
 EXPOSE 8000

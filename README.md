@@ -219,4 +219,4 @@ flowchart LR
 
 Результаты локальных и моделируемых проверок, а также невыполненные испытания реальных площадок: [VALIDATION](https://github.com/cvn-mosprom/deploy/blob/main/VALIDATION.md).
 
-Локально пройдены 811 API-, 105 bot-, 200 контрактных, 104 sim- и 251 Docker E2E-сценарий. Это испытания изолированного стенда; реальные географические площадки, Patroni failover и PITR ещё требуют приёмки. Trivy блокирует выпуск из-за High-находок в базовых Python/Caddy-образах; исключения для них не добавлены.
+Локально пройдены 811 API-, 105 bot-, 200 контрактных, 104 sim- и 251 Docker E2E-сценарий. Это испытания изолированного стенда; реальные географические площадки, Patroni failover и PITR ещё требуют приёмки. Прежние High-уязвимости Python/Caddy устранены: API и bot используют Python 3.12 Alpine, Caddy пересобирается с исправленными Go и x/net. Итоговые linux/amd64 runtime прошли Trivy с 0 High/Critical, без исключений. Подробности — в VALIDATION deploy и [web/caddy/README.md](web/caddy/README.md).

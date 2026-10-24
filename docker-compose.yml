@@ -46,7 +46,7 @@ x-sim: &sim
   # image is pinned to the vendored frontend commit (lib/sim): a lib/sim bump = new tag = new sim image
   image: mosprom-sim:${SIM_COMMIT:-dev}
   restart: unless-stopped
-  mem_limit: 640m # ~100 MB per Node worker at idle; SIM_WORKERS (1..4) bounds the total
+  mem_limit: 640m # ~100 MB per Node worker at idle; SIM_WORKERS (1..256; 0 = CPU auto) bounds the total
   env_file: *env-file
   environment:
     PORT: "8080"

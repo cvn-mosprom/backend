@@ -12,7 +12,7 @@
 # Manual build without Docker (Node 22):  cd vendor/frontend/web && npx pnpm@11.25.0 install --frozen-lockfile &&
 #   VITE_API_URL=/ npx pnpm@11.25.0 build        -> vendor/frontend/web/build (serve it with the Caddyfile's root).
 
-FROM docker.io/library/node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS web-build
+FROM --platform=$BUILDPLATFORM docker.io/library/node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS web-build
 ARG PNPM_VERSION=11.25.0
 ARG FRONTEND_REVISION
 ARG ROUTING_ZONE
@@ -31,10 +31,27 @@ COPY vendor/frontend/web/ ./
 COPY web/generate-csp.mjs /tmp/generate-csp.mjs
 RUN pnpm run build && node /tmp/generate-csp.mjs /app/build /tmp/content-security-policy.caddy
 
-FROM docker.io/library/caddy:2-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+# Rebuild the upstream Caddy command with patched Go and the reviewed module lock.
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS caddy-build
+ENV GOTOOLCHAIN=local CGO_ENABLED=0
+WORKDIR /src
+COPY web/caddy/go.mod web/caddy/go.sum ./
+RUN go mod download && go mod verify
+ARG TARGETOS
+ARG TARGETARCH
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/caddy github.com/caddyserver/caddy/v2/cmd/caddy
+
+# Minimal Alpine runtime excludes curl/libbrotli and all Go build tooling.
+FROM docker.io/library/alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+ENV XDG_CONFIG_HOME=/config XDG_DATA_HOME=/data
+COPY --from=caddy-build /out/caddy /usr/bin/caddy
 COPY --from=web-build /app/build /srv
 COPY --from=web-build /tmp/content-security-policy.caddy /etc/caddy/content-security-policy.caddy
-
 RUN addgroup -g 10004 web && adduser -D -H -u 10004 -G web web \
-    && chown -R web:web /data /config
+    && mkdir -p /data/caddy /config/caddy \
+    && chown -R web:web /data /config \
+    && test -s /etc/ssl/certs/ca-certificates.crt
 USER 10004:10004
+WORKDIR /srv
+EXPOSE 80 443 443/udp
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

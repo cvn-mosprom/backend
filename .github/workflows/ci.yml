@@ -82,7 +82,7 @@ jobs:
           npm audit --audit-level=high
           .venv/bin/pytest -q --junitxml=results.xml
           .venv/bin/python ../tools/check_pytest.py results.xml
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: backend-tests
@@ -167,7 +167,7 @@ jobs:
           IMAGE: ${{ matrix.name }}
           FRONTEND_SHA: ${{ steps.source.outputs.frontend }}
         run: python tools/publish_metadata.py
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with: {name: 'image-${{ matrix.name }}', path: image.json, retention-days: 14}
   release-pr:
     needs: publish
@@ -265,7 +265,7 @@ jobs:
           IMAGE_TAG_PREFIX: prototype
           RELEASE_PROFILE: prototype-v1
         run: python tools/publish_metadata.py
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with: {name: 'prototype-image-${{ matrix.name }}', path: image.json, retention-days: 30}
   deliver-prototype:
     needs: publish-prototype
@@ -315,6 +315,6 @@ jobs:
         run: |
           curl --fail --silent --show-error --max-time 20 https://ochakovo.velikoss.ru/ready
           curl --fail --silent --show-error --max-time 20 https://ochakovo.velikoss.ru/app --output /dev/null
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with: {name: prototype-release, path: prototype-release.json, retention-days: 90}

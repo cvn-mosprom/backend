@@ -1,5 +1,7 @@
 # Mosprom: backend for the Mini App game
 
+CD прототипа из `infra/devops-regional-routing`: после quality/integration/security четыре образа проходят Trivy, получают SBOM/provenance и подписи cosign. При `PROTOTYPE_CD_ENABLED=true` выполняется доставка точных digest в отдельный проект `mosprom-prototype`, с дампом и smoke. Настройка ключа, переменных и отката: [deploy/PROTOTYPE-CD.md](https://github.com/cvn-mosprom/deploy/blob/infra/devops-regional-routing/PROTOTYPE-CD.md). Patroni этим каналом не управляется.
+
 Server-authoritative backend for the Telegram Mini App (factory tycoon). The client only sends commands, the server owns the
 state. Product spec: `docs/spec-rev4.txt`; interfaces between the parts: `docs/ARCHITECTURE.md`; progress: `PROGRESS.md`.
 

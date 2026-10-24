@@ -8,6 +8,10 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - S2 done: GET /api/bootstrap, POST /api/command (row lock, 409, idempotency deque in state.meta + Redis), POST /api/advance, GET /api/factory/me (degraded), buildEnd no-op, sim reason codes, shift limit in state + max(now,lastTick) guard, background offline report accumulation, clients/web/HttpGameApi.ts, e2e S2 acceptance (9/9). Tests: api 257 (with SIM_URL), sim 86, contract 212, e2e 9.
 - S3 done: submitShift rules (api/app/shift.py), shifts log table, features.undo from sim health, 150 KB state warning + audit test (24 KB today). Tests: api 396, sim 87, e2e 9.
 - S4 part A done: leaderboard (tabs, Redis 20 s cache, me/gapTo51), factory/{playerId}, season/summary, real snapshot.rank, bot seed (`docker compose exec api python -m app.seed_bots`), speed_bph measured from produced delta. Tests: api 434, e2e 18.
+- S4 part B done: server season rotation + season_results, state.season alignment, /internal/* (X-Internal-Token), bot APScheduler jobs (rotate 1 min, top-200 advance 12 min, bots grow 10 min).
+- S5 done: leads (18+, consent, one per season, tags, outbox lead_created/lead_revoked), DELETE leads/me (152-FZ), quiz (10 server-side questions), events batches with whitelist. Works with sim down.
+- S7 early done: sim circuit breaker, DB 3 s / lock 2 s / request 5 s timeouts, slow log, backup profile + scripts, restart resilience e2e, README for jury.
+- Tests now: api 652, sim 87, contract 212, bot 30, e2e 41 (E2E_DOCKER=1).
 
 ## In progress
 - (none)
@@ -21,5 +25,6 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - Command after >8 h gap: sim runs capped bootstrap first, then the command.
 
 ## Next
-- S4 part B: server season rotation (close by ends_at, results, new season +1 h; align state.season of the mock), background top-200 catch-up every 10–15 min (bot APScheduler, reason=background, no version bump), bot growth job (seed_bots.grow_bots).
-- Then S5 (leads, 18+, consent, quiz, events), S6 (HR bot), S7 (stabilisation).
+- S6: HR bot (/start start_param, lead card + status buttons, /leads filters, /export CSV, /funnel, /sources, /stats, /top by uni, outbox delivery, order reminders to consenting players, 5xx alert >20%/10 min). Also fix: sync users.age_confirmed from ageConfirm command.
+- S7 rest: smoke test 20–50 scenarios with two tabs and flaky network, final README.
+- Migration ids are short: next is "0007" with down_revision "0006".

@@ -111,7 +111,7 @@ async def test_ready_prod_requires_explicit_env(make_client, db_ok, redis_ok, mo
 
     monkeypatch.delenv("SIM_URL", raising=False)
     s = Settings(app_env="prod", bot_token="x", database_url="postgresql://a/b", redis_url="redis://r/0")
-    assert s.missing_required() == ["SIM_URL"]  # a dev default must not satisfy prod
+    assert s.missing_required() == ["SIM_URL", "INTERNAL_TOKEN"]  # a dev default must not satisfy prod
     assert build_settings(app_env="prod", dev_auth=False).missing_required() == []
 
 

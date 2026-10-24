@@ -33,7 +33,9 @@ from tests.helpers import (API_DIR, DEAD_REDIS_URL, TEST_DB_URL, TEST_REDIS_URL,
 DOCKER_HINT = "start the containers listed in the tests/conftest.py docstring"
 ENV_VARS = ["APP_ENV", "DATABASE_URL", "REDIS_URL", "SIM_URL", "SIM_TIMEOUT_S", "BOT_TOKEN", "DEV_AUTH",
             "INIT_DATA_MAX_AGE_S", "PGBOUNCER", "DOMAIN", "LOG_LEVEL", "RATE_LIMIT_ENABLED",
-            "RATE_LIMIT_OVERRIDES", "DB_POOL_SIZE", "DB_MAX_OVERFLOW"]
+            "RATE_LIMIT_OVERRIDES", "DB_POOL_SIZE", "DB_MAX_OVERFLOW", "INTERNAL_TOKEN", "REQUEST_TIMEOUT_S",
+            "SLOW_REQUEST_MS", "DB_STATEMENT_TIMEOUT_MS", "DB_LOCK_TIMEOUT_MS", "SIM_BREAKER_THRESHOLD",
+            "SIM_BREAKER_OPEN_S"]
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +89,7 @@ def redis_url() -> str:
 async def clean_db(pg_url):
     """Empty tables (schema stays migrated); yields a raw asyncpg connection for assertions."""
     conn = await asyncpg.connect(pg_dsn(pg_url))
-    await conn.execute("TRUNCATE factories, seasons, users RESTART IDENTITY CASCADE")
+    await conn.execute("TRUNCATE factories, seasons, users, outbox RESTART IDENTITY CASCADE")
     yield conn
     await conn.close()
 

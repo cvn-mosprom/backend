@@ -14,8 +14,22 @@ from .errors import AppError
 from .settings import Settings
 
 
-def connect_args(settings: Settings) -> dict[str, Any]:
+def connect_args(settings: Settings, timeouts: bool = True) -> dict[str, Any]:
+    """asyncpg connect args. `timeouts=False` (migrations, one-off scripts) leaves statements unbounded.
+
+    Timeouts (S7): direct Postgres gets `statement_timeout` / `lock_timeout` as session defaults at connect time
+    (startup parameters). PgBouncer in transaction mode does not accept those startup parameters, so there the same
+    bound is enforced client-side with asyncpg's `command_timeout` (cancels the running query on the server) and,
+    in the pgbouncer container, by its own `QUERY_TIMEOUT` (see docker-compose.yml)."""
     args: dict[str, Any] = {"timeout": settings.db_connect_timeout_s}
+    if timeouts and settings.db_statement_timeout_ms > 0:
+        if settings.pgbouncer:
+            args["command_timeout"] = settings.db_statement_timeout_ms / 1000
+        else:
+            server_settings = {"statement_timeout": str(settings.db_statement_timeout_ms)}
+            if settings.db_lock_timeout_ms > 0:
+                server_settings["lock_timeout"] = str(settings.db_lock_timeout_ms)
+            args["server_settings"] = server_settings
     if settings.pgbouncer:
         # transaction pooling: no server-side prepared statements may outlive a transaction
         args.update(
@@ -26,7 +40,7 @@ def connect_args(settings: Settings) -> dict[str, Any]:
     return args
 
 
-def make_engine(settings: Settings, url: str | None = None, **kw: Any) -> AsyncEngine:
+def make_engine(settings: Settings, url: str | None = None, timeouts: bool = True, **kw: Any) -> AsyncEngine:
     if "poolclass" not in kw:  # default QueuePool; callers may pass e.g. NullPool (migrations)
         kw.setdefault("pool_size", settings.db_pool_size)
         kw.setdefault("max_overflow", settings.db_max_overflow)
@@ -34,7 +48,8 @@ def make_engine(settings: Settings, url: str | None = None, **kw: Any) -> AsyncE
     return create_async_engine(
         url or settings.database_url,
         pool_pre_ping=True,
-        connect_args=connect_args(settings),
+        hide_parameters=True,  # personal data (leads) must not reach the logs inside DBAPI error messages
+        connect_args=connect_args(settings, timeouts),
         json_serializer=lambda o: orjson.dumps(o).decode(),
         json_deserializer=orjson.loads,
         **kw,

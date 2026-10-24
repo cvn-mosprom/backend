@@ -28,7 +28,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import make_engine, make_sessionmaker
-from .game import GameService
+from . import seasons
 from .models import Factory, Season, User
 from .settings import get_settings
 from .sim_client import now_ms
@@ -100,7 +100,8 @@ async def grow_bots(session: AsyncSession, season_id: int, progress: float) -> i
     """Set the columns of every bot factory for `progress`; inside one season a value never goes down (the first time
     a bot lands in a season it starts from the curve). Returns the number of bots touched."""
     rows = (await session.execute(
-        select(Factory.user_id, Factory.season_id, Factory.state, Factory.stars, Factory.quality_avg, Factory.speed_bph)
+        select(Factory.user_id, Factory.season_id, Factory.state, Factory.stars, Factory.quality_avg, Factory.speed_bph,
+               Factory.credits, Factory.xp, Factory.bottles_season)
         .where(Factory.is_bot.is_(True)))).all()
     touched = 0
     for r in rows:
@@ -109,13 +110,24 @@ async def grow_bots(session: AsyncSession, season_id: int, progress: float) -> i
             continue
         v = bot_values(curve, progress)
         if r.season_id == season_id:  # monotonic within the season
-            v["stars"] = max(v["stars"], r.stars)
-            v["speed_bph"] = max(v["speed_bph"], r.speed_bph)
-            v["quality_avg"] = max(v["quality_avg"], r.quality_avg)
+            for col in ("stars", "speed_bph", "quality_avg", "credits", "xp", "bottles_season"):
+                v[col] = max(v[col], getattr(r, col))
         await session.execute(update(Factory).where(Factory.user_id == r.user_id)
                               .values(season_id=season_id, updated_at=datetime.now(timezone.utc), **v))
         touched += 1
     return touched
+
+
+async def grow_current(session: AsyncSession, wall_ms: int) -> dict[str, Any]:
+    """POST /internal/bots/grow: grow every bot to the real progress of the newest season (monotonic inside it; the first
+    call in a new season moves the bots into it). Serialised with season rotation by the season advisory lock; nothing to
+    do (`skipped`) while that season is over, i.e. in the gap before the next one opens. Runs in the caller's transaction."""
+    await seasons.lock(session)
+    season = await seasons.newest(session)
+    if season is None or season.closed or seasons.is_over(season, wall_ms):
+        return {"bots": 0, "season_id": season.id if season else None, "progress": None, "skipped": "no_open_season"}
+    p = season_progress(season, wall_ms)
+    return {"bots": await grow_bots(session, season.id, p), "season_id": season.id, "progress": round(p, 4)}
 
 
 async def seed(session: AsyncSession, count: int = DEFAULT_COUNT, progress: float | None = None,
@@ -123,8 +135,8 @@ async def seed(session: AsyncSession, count: int = DEFAULT_COUNT, progress: floa
     """Create the missing bots (ids 0..count-1) in the open season and grow all bots. One transaction (the caller's)."""
     layouts = json.loads(LAYOUTS_FILE.read_text(encoding="utf-8"))
     wall = now_ms()
-    season_id = await GameService._ensure_open_season(session, wall)
-    season = (await session.execute(select(Season).where(Season.id == season_id))).scalar_one()
+    season = await seasons.ensure(session, wall, bots_enabled=get_settings().bots_enabled)
+    season_id = season.id
     p = max(season_progress(season, wall), floor) if progress is None else progress
     existing = set((await session.execute(select(User.tg_id).where(User.is_bot.is_(True)))).scalars())
     created = 0

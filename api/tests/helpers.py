@@ -1,6 +1,7 @@
 """Constants and builders shared by tests (importable: `from tests.helpers import dev, tma`)."""
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -21,6 +22,7 @@ TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:56380/0")
 DEAD_DB_URL = "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nodb"
 DEAD_REDIS_URL = "redis://127.0.0.1:1/0"
 BOT_TOKEN = "123456:TEST-BOT-TOKEN"
+INTERNAL_TOKEN = "test-internal-token-0123456789"  # >= 16 chars, not a placeholder: valid even under APP_ENV=prod
 
 
 class DeadRedis:
@@ -86,11 +88,21 @@ def add_test_routes(app: FastAPI) -> None:
     async def small():
         return {"ok": True}
 
+    @app.get("/t/sleep/{secs}")  # S7: request cap / slow log
+    async def sleep_(secs: float):
+        await asyncio.sleep(secs)
+        return {"slept": secs}
+
+    @app.get("/internal/t/sleep/{secs}")  # /internal/* is exempt from the request cap
+    async def internal_sleep(secs: float):
+        await asyncio.sleep(secs)
+        return {"slept": secs}
+
 
 def build_settings(**overrides) -> Settings:
     """Settings that ignore the developer's environment. Defaults: no reachable DB / Redis."""
     base = dict(app_env="dev", database_url=DEAD_DB_URL, redis_url=DEAD_REDIS_URL, sim_url="http://sim.test",
-                sim_timeout_s=1.0, bot_token=BOT_TOKEN, dev_auth=True, init_data_max_age_s=86400,
+                sim_timeout_s=1.0, bot_token=BOT_TOKEN, internal_token=INTERNAL_TOKEN, dev_auth=True, init_data_max_age_s=86400,
                 pgbouncer=False, log_level="INFO", rate_limit_overrides={}, rate_limit_enabled=True)
     return Settings(**{**base, **overrides})
 

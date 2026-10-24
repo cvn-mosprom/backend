@@ -16,6 +16,10 @@ def normalize_db_url(url: str) -> str:
     return url
 
 
+# values shipped in compose / .env.example: fine for local dev, refused in prod
+INTERNAL_TOKEN_PLACEHOLDERS = frozenset({"dev-internal-token", "change-me", "changeme", "change-me-internal-token"})
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
@@ -35,6 +39,20 @@ class Settings(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 5
     db_connect_timeout_s: float = 3.0
+
+    # S7 stabilisation. Timeouts (spec Блок 8): statement 3 s, lock wait 2 s, sim 3 s (SIM_TIMEOUT_S), whole request 5 s
+    # (everything except /internal/*, which runs long background work). Slow requests (> SLOW_REQUEST_MS) log at WARNING.
+    db_statement_timeout_ms: int = 3000
+    db_lock_timeout_ms: int = 2000
+    request_timeout_s: float = 5.0
+    slow_request_ms: int = 1000
+    # Per-process circuit breaker on the sim client: N consecutive failures -> fail fast for OPEN_S, then one probe.
+    sim_breaker_threshold: int = 5
+    sim_breaker_open_s: float = 10.0
+
+    # Shared secret of /internal/* (header X-Internal-Token), used by the bot's background jobs. Never exposed by caddy.
+    # Empty = the internal API is disabled (always 401). APP_ENV=prod refuses to start with an empty/placeholder value.
+    internal_token: str = ""
 
     # Rate limiter: master switch + per-name override of the max requests per window,
     # e.g. RATE_LIMIT_OVERRIDES='{"command": 600}'.
@@ -64,6 +82,12 @@ class Settings(BaseSettings):
         """DEV_AUTH is honoured only outside prod: APP_ENV=prod forces it off."""
         return self.dev_auth and not self.is_prod
 
+    @property
+    def internal_token_ok(self) -> bool:
+        """A usable secret: at least 16 chars and not one of the documented placeholders."""
+        t = self.internal_token.strip()
+        return len(t) >= 16 and t.lower() not in INTERNAL_TOKEN_PLACEHOLDERS
+
     def missing_required(self) -> list[str]:
         """Names of required env vars that are absent. In prod nothing may rely on dev defaults."""
         required = ["DATABASE_URL", "REDIS_URL", "SIM_URL"] + (["BOT_TOKEN"] if self.is_prod else [])
@@ -74,6 +98,8 @@ class Settings(BaseSettings):
             defaulted_in_prod = self.is_prod and field != "bot_token" and field not in self.model_fields_set
             if empty or defaulted_in_prod:
                 missing.append(name)
+        if self.is_prod and not self.internal_token_ok:
+            missing.append("INTERNAL_TOKEN")
         return missing
 
 

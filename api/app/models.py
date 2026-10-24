@@ -1,12 +1,12 @@
 """SQLAlchemy models. Alembic migrations in api/alembic are hand-written to match."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import BigInteger, ForeignKey, Index, Integer, MetaData, Text, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 NAMING = {
@@ -111,3 +111,117 @@ class Shift(Base):
 
 
 Index("ix_shifts_user_created", Shift.user_id, Shift.created_at)
+
+
+class SeasonResult(Base):
+    """Final standings of a closed season, frozen by app.seasons.rotate (general ranking incl. bots; is_bot lets analytics skip them)."""
+
+    __tablename__ = "season_results"
+
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    place: Mapped[int] = mapped_column(Integer, nullable=False)
+    stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    quality: Mapped[float] = mapped_column(sa.REAL, server_default=text("0"), nullable=False)
+    speed_bph: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    bottles: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), nullable=False)
+    is_bot: Mapped[bool] = mapped_column(server_default=text("false"), nullable=False)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_season_results_season_place", SeasonResult.season_id, SeasonResult.place)
+Index("ix_season_results_user", SeasonResult.user_id)
+
+
+# ---------------------------------------------------------------- S5: leads, outbox, quiz, events
+
+class Lead(Base):
+    """Candidate form of the case (one per user per season). Personal data: never logged. `consent_revoked_at` set
+    = 152-FZ revocation: the row stays (status unchanged) but is excluded from the active funnel and mailings."""
+
+    __tablename__ = "leads"
+    __table_args__ = (
+        sa.UniqueConstraint("user_id", "season_id", name="uq_leads_user_season"),
+        sa.CheckConstraint("status in ('new','contacted','interview','rejected','hired')", name="status"),
+        sa.CheckConstraint("practice_type is null or practice_type in ('paid','free','job')", name="practice_type"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"), nullable=False)
+    full_name: Mapped[str] = mapped_column(Text, nullable=False)
+    birth_date: Mapped[date | None] = mapped_column(sa.Date)
+    phone: Mapped[str | None] = mapped_column(Text)
+    email: Mapped[str | None] = mapped_column(Text)
+    telegram: Mapped[str | None] = mapped_column(Text)  # bare username, without '@'
+    university: Mapped[str] = mapped_column(Text, nullable=False)
+    direction: Mapped[str | None] = mapped_column(Text)
+    course: Mapped[str | None] = mapped_column(Text)
+    vacancy: Mapped[str | None] = mapped_column(Text)  # profession id
+    ready_from: Mapped[date | None] = mapped_column(sa.Date)
+    readiness: Mapped[str | None] = mapped_column(Text)  # now | season | later
+    practice_type: Mapped[str | None] = mapped_column(Text)  # paid | free | job
+    consent: Mapped[bool] = mapped_column(nullable=False)
+    consent_at: Mapped[datetime] = _tstz(nullable=False)
+    consent_text_version: Mapped[str] = mapped_column(Text, nullable=False)
+    consent_revoked_at: Mapped[datetime | None] = _tstz()
+    tags: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'::text[]"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, server_default=text("'new'"), nullable=False)
+    hr_note: Mapped[str | None] = mapped_column(Text)
+    best_profession: Mapped[str | None] = mapped_column(Text)
+    season_place: Mapped[int | None] = mapped_column(Integer)
+    quiz_score: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    updated_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_leads_status_created", Lead.status, Lead.created_at)
+Index("ix_leads_university", Lead.university)
+
+
+class Outbox(Base):
+    """Transactional outbox: the API inserts a row in the transaction of the business change, the bot delivers it
+    (sent_at stays NULL until delivered; attempts / last_error are the bot's retry bookkeeping)."""
+
+    __tablename__ = "outbox"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)  # lead_created | lead_revoked | ...
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    sent_at: Mapped[datetime | None] = _tstz()
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+Index("ix_outbox_pending", Outbox.id, postgresql_where=text("sent_at IS NULL"))
+
+
+class QuizAnswer(Base):
+    """One answer per (user, question); correctness is decided on the server (app/quiz_bank.py)."""
+
+    __tablename__ = "quiz_answers"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    question_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    correct: Mapped[bool] = mapped_column(nullable=False)
+    answer: Mapped[int] = mapped_column(Integer, nullable=False)  # chosen option index
+    answered_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+class Event(Base):
+    """Analytics event (funnel). `source` = users.source at ingestion time. Bots (users.is_bot) never write here."""
+
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    props: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    ts: Mapped[datetime] = _tstz(nullable=False)  # client time (checked: not from the future)
+    source: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_events_name_ts", Event.name, Event.ts)
+Index("ix_events_user_ts", Event.user_id, Event.ts)

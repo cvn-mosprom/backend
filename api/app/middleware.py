@@ -1,6 +1,7 @@
-"""Request id, JSON access log, last-resort 500 handler (pure ASGI, one pass)."""
+"""Request id, JSON access log, request time cap, slow-request log, last-resort 500 handler (pure ASGI, one pass)."""
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 import re
@@ -21,6 +22,7 @@ app_log = logging.getLogger("mosprom.app")
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_id", default=None)
 _RID_OK = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 QUIET_PATHS = {"/health", "/ready"}  # probes: DEBUG unless they fail
+NO_TIMEOUT_PREFIXES = ("/internal/",)  # long background calls (top-200 catch-up, season rotation): no 5 s cap
 
 
 class JsonFormatter(logging.Formatter):
@@ -56,8 +58,13 @@ def setup_logging(level: str = "INFO") -> None:
 
 
 class RequestContextMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
+    """`request_timeout_s` caps a whole request (cancels the handler, answers 503 `timeout` + Retry-After: 1 if nothing
+    was sent yet); `/internal/*` is exempt. `slow_ms`: requests slower than that log at WARNING ("slow request")."""
+
+    def __init__(self, app: ASGIApp, request_timeout_s: float = 5.0, slow_ms: float = 1000.0) -> None:
         self.app = app
+        self.request_timeout_s = request_timeout_s
+        self.slow_ms = slow_ms
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -79,9 +86,22 @@ class RequestContextMiddleware:
                 MutableHeaders(scope=message)["X-Request-ID"] = rid
             await send(message)
 
+        path = scope.get("path", "")
+        cap = None if path.startswith(NO_TIMEOUT_PREFIXES) or self.request_timeout_s <= 0 else self.request_timeout_s
+
         try:
             try:
-                await self.app(scope, receive, send_wrapper)
+                try:
+                    async with asyncio.timeout(cap) as deadline:
+                        await self.app(scope, receive, send_wrapper)
+                except TimeoutError:
+                    if not deadline.expired():
+                        raise  # a TimeoutError of the handler itself, not our cap
+                    state["error_code"] = "timeout"
+                    app_log.warning("request timed out after %ss", cap, extra={"fields": {"request_id": rid}})
+                    if status is None:
+                        await error_response("timeout", "Request took too long", 503, {"timeout_s": cap},
+                                             headers={"Retry-After": "1"})(scope, receive, send_wrapper)
             except Exception:
                 app_log.exception("unhandled exception", extra={"fields": {"request_id": rid}})
                 state["error_code"] = "internal_error"
@@ -92,15 +112,24 @@ class RequestContextMiddleware:
             request_id_var.reset(token)
             self._log(scope, state, rid, status, started)
 
-    @staticmethod
-    def _log(scope: Scope, state: dict, rid: str, status: int | None, started: float) -> None:
+    def _log(self, scope: Scope, state: dict, rid: str, status: int | None, started: float) -> None:
         path = scope.get("path", "")
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        slow = duration_ms > self.slow_ms > 0
         level = logging.INFO
         if status is not None and status >= 500:
             level = logging.ERROR
+        elif slow:
+            level = logging.WARNING
         elif path in QUIET_PATHS:
             level = logging.DEBUG
-        access_log.log(level, "request", extra={"fields": {
+        extra: dict = {"slow": True} if slow else {}
+        sim = getattr(getattr(scope.get("app"), "state", None), "sim", None)
+        breaker = getattr(sim, "breaker", None)
+        if breaker is not None and breaker.state != "closed":
+            extra["breaker_state"] = breaker.state  # only while the sim breaker is not closed
+        access_log.log(level, "slow request" if slow else "request", extra={"fields": {
+            **extra,
             "request_id": rid,
             "user_id": state.get("user_id"),
             "tg_id": state.get("tg_id"),
@@ -108,5 +137,5 @@ class RequestContextMiddleware:
             "path": path,
             "status": status,
             "error_code": state.get("error_code"),
-            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            "duration_ms": duration_ms,
         }})

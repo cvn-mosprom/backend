@@ -40,7 +40,7 @@ def _run(connection: Connection) -> None:
 
 async def run_migrations_online() -> None:
     # PGBOUNCER=1 is honoured, though migrations should normally talk to Postgres directly.
-    engine = make_engine(Settings(), url=_url(), poolclass=NullPool)
+    engine = make_engine(Settings(), url=_url(), timeouts=False, poolclass=NullPool)  # DDL may take longer than 3 s
     async with engine.connect() as connection:
         await connection.run_sync(_run)
     await engine.dispose()

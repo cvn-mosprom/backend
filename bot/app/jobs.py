@@ -3,10 +3,14 @@
 Spec (Блок. Стек): the bot process with APScheduler is the single owner of periodic work, so that two
 competing schedulers never exist. Nothing else in the repo (api, sim) runs timers of its own.
 
-S0: the registry is intentionally empty; the scheduler starts with no jobs. Planned entries (sprints S4-S7):
+Registered (S4): ``seasons_rotate`` every minute, ``top_advance`` every 12 minutes (+ jitter), ``bots_grow`` every
+10 minutes. They only call the api's ``POST /internal/...`` (header ``X-Internal-Token``, base URL ``API_INTERNAL_URL``,
+default http://api:8000): the bot never touches factory state itself. Every job logs and swallows its errors (a failing
+api, a wrong token or a timeout must never stop the scheduler); ``max_instances=1`` and ``coalesce=True`` so a slow run
+never piles up.
 
-* season rotation: close a season at ``ends_at``, open the next one an hour later   (S4)
-* leaderboard catch-up: lazily advance the top-200 factories every 10-15 min         (S4)
+Planned entries (sprints S6-S7):
+
 * order reminders: notify consenting players about orders about to finish / expire   (S6)
 * HR digest and lead-card outbox delivery                                            (S6)
 * 5xx alert: >20 % 5xx over 10 minutes                                               (S6)
@@ -17,12 +21,16 @@ database directly for analytics, but never touches game state of factories.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from .config import Settings
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +44,95 @@ class JobSpec:
     description: str = ""
 
 
-JOBS: tuple[JobSpec, ...] = ()
+class InternalApiError(Exception):
+    """The api answered /internal/* with a non-200 status."""
+
+    def __init__(self, status: int, body: str) -> None:
+        super().__init__(f"HTTP {status}: {body[:200]}")
+        self.status = status
+
+
+class InternalApi:
+    """Minimal client of the api's /internal/* (aiohttp is already a dependency of aiogram)."""
+
+    def __init__(self, base_url: str, token: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+
+    @classmethod
+    def from_env(cls, settings: Settings | None = None) -> InternalApi:
+        s = settings or Settings.from_env()
+        return cls(s.api_internal_url, s.internal_token)
+
+    async def post(self, path: str, payload: dict[str, Any] | None = None, timeout_s: float = 60) -> dict[str, Any]:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_s)) as http:
+            async with http.post(self.base_url + path, json=payload, headers={"X-Internal-Token": self.token}) as r:
+                text = await r.text()
+                if r.status != 200:
+                    raise InternalApiError(r.status, text)
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise InternalApiError(200, f"unexpected body: {text}")
+        return data
+
+
+_api: InternalApi | None = None  # tests inject a client that points at a local server
+
+
+def set_api(api: InternalApi | None) -> None:
+    global _api
+    _api = api
+
+
+async def call_internal(job: str, path: str, payload: dict[str, Any] | None = None,
+                        timeout_s: float = 60) -> dict[str, Any] | None:
+    """One internal call of a job: returns the JSON answer, or None after logging why it failed. Never raises
+    (except task cancellation), so a job can never take the scheduler down."""
+    try:
+        api = _api or InternalApi.from_env()
+        if not api.token:
+            log.warning("%s skipped: INTERNAL_TOKEN is not set", job)
+            return None
+        return await api.post(path, payload, timeout_s)
+    except InternalApiError as e:
+        log.error("%s failed: %s%s", job, e, " (check INTERNAL_TOKEN)" if e.status == 401 else "")
+    except Exception as e:  # api restarting (connection refused), timeout, bad JSON ...: the next tick retries
+        log.warning("%s failed: %s: %s", job, type(e).__name__, e)
+    return None
+
+
+async def seasons_rotate() -> dict[str, Any] | None:
+    """Close the seasons that ended, open the next one 1 h after the end (idempotent on the api side)."""
+    result = await call_internal("seasons_rotate", "/internal/seasons/rotate", timeout_s=120)
+    if result and (result.get("closed") or result.get("opened")):
+        log.info("seasons_rotate: closed=%s opened=%s", result.get("closed"), result.get("opened"))
+    return result
+
+
+async def top_advance() -> dict[str, Any] | None:
+    """Lazy catch-up of the top-200 factories (leaderboard honesty): reason=background, no version bump."""
+    result = await call_internal("top_advance", "/internal/top/advance", {"limit": 200}, timeout_s=330)
+    if result is not None:
+        level = logging.WARNING if result.get("sim_down") or result.get("failed") else logging.INFO
+        log.log(level, "top_advance: advanced=%s skipped=%s failed=%s sim_down=%s ms=%s", result.get("advanced"),
+                result.get("skipped"), result.get("failed"), result.get("sim_down"), result.get("ms"))
+    return result
+
+
+async def bots_grow() -> dict[str, Any] | None:
+    """Grow the demo bots to the real progress of the current season."""
+    result = await call_internal("bots_grow", "/internal/bots/grow", timeout_s=60)
+    if result is not None:
+        log.info("bots_grow: bots=%s season=%s progress=%s", result.get("bots"), result.get("season_id"),
+                 result.get("progress"))
+    return result
+
+
+JOBS: tuple[JobSpec, ...] = (
+    JobSpec("seasons_rotate", seasons_rotate, "interval", {"minutes": 1}, "season rotation (close / open)"),
+    JobSpec("top_advance", top_advance, "interval", {"minutes": 12, "jitter": 90}, "top-200 background catch-up"),
+    JobSpec("bots_grow", bots_grow, "interval", {"minutes": 10, "jitter": 30}, "demo bots growth"),
+)
 
 
 def build_scheduler() -> AsyncIOScheduler:
@@ -57,8 +153,10 @@ def register_jobs(scheduler: AsyncIOScheduler, jobs: Iterable[JobSpec] | None = 
             id=spec.id,
             name=spec.description or spec.id,
             replace_existing=True,
+            max_instances=1,
+            coalesce=True,
             **spec.trigger_args,
         )
         ids.append(spec.id)
-    log.info("scheduler jobs registered: %s", ids or "none (S0)")
+    log.info("scheduler jobs registered: %s", ids or "none")
     return ids

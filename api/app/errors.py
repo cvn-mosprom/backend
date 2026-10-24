@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
-from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
@@ -98,6 +98,34 @@ async def _db_unavailable(request: Request, exc: Exception) -> Response:
     return error_response("db_unavailable", "Database is unavailable", 503)
 
 
+# SQLSTATEs that mean "the database could not serve this in time / right now": 57014 query_canceled (statement_timeout),
+# 55P03 lock_not_available (lock_timeout), 57P01-03 admin shutdown / crash recovery, 53300 too_many_connections.
+_DB_REASONS = {"57014": "statement_timeout", "55P03": "lock_timeout", "57P01": "admin_shutdown",
+               "57P02": "crash_shutdown", "57P03": "cannot_connect_now", "53300": "too_many_connections"}
+
+
+async def _db_error(request: Request, exc: DBAPIError) -> Response:
+    """Statement / lock timeouts and a restarting database -> 503 db_unavailable; any other DB error stays a 500."""
+    state = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    reason = _DB_REASONS.get(state or "")
+    if reason is None and (state or "").startswith("08"):
+        reason = "connection_error"
+    if reason is None:
+        return await _internal_error(request, exc)
+    log.warning("database error %s (%s)", state, reason)
+    _mark(request, "db_unavailable")
+    return error_response("db_unavailable", "Database is unavailable", 503, {"reason": reason},
+                          headers={"Retry-After": "1"})
+
+
+async def _timeout_error(request: Request, exc: TimeoutError) -> Response:
+    """asyncpg `command_timeout` (PGBOUNCER mode) surfaces as a bare TimeoutError from the driver."""
+    log.warning("database command timed out")
+    _mark(request, "db_unavailable")
+    return error_response("db_unavailable", "Database is unavailable", 503, {"reason": "statement_timeout"},
+                          headers={"Retry-After": "1"})
+
+
 async def _redis_unavailable(request: Request, exc: Exception) -> Response:
     log.warning("redis unavailable: %s", type(exc).__name__)
     _mark(request, "redis_unavailable")
@@ -118,6 +146,8 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(OperationalError, _db_unavailable)
     app.add_exception_handler(InterfaceError, _db_unavailable)
     app.add_exception_handler(ConnectionError, _db_unavailable)
+    app.add_exception_handler(DBAPIError, _db_error)
+    app.add_exception_handler(TimeoutError, _timeout_error)
     app.add_exception_handler(RedisConnectionError, _redis_unavailable)
     app.add_exception_handler(RedisTimeoutError, _redis_unavailable)
     app.add_exception_handler(Exception, _internal_error)

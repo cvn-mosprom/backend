@@ -11,15 +11,15 @@ from app.jobs import JOBS, JobSpec, build_scheduler, register_jobs
 from app.main import amain, make_bot
 
 
-def test_job_registry_is_empty_in_s0():
-    assert JOBS == ()
+def test_job_registry_has_the_s4_jobs():
+    assert [j.id for j in JOBS] == ["seasons_rotate", "top_advance", "bots_grow"]
 
 
-def test_register_jobs_empty_and_custom():
+def test_register_jobs_registry_and_custom():
     async def run() -> tuple[list[str], list[str]]:
         scheduler = build_scheduler()
         assert isinstance(scheduler, AsyncIOScheduler)
-        assert register_jobs(scheduler) == []
+        assert register_jobs(scheduler, []) == []
         assert scheduler.get_jobs() == []
 
         async def noop() -> None: ...

@@ -100,9 +100,10 @@ async def test_bootstrap_uses_existing_open_season(game):
     assert body["season"]["id"] == 1 and (await game.db.fetchval("SELECT count(*) FROM seasons")) == 1
 
 
-async def test_bootstrap_creates_season_when_all_are_closed(game):
+async def test_bootstrap_opens_next_season_when_the_roll_is_overdue(game):
+    """S4: the newest season ended more than SEASON_ROLL_H h ago (the rotation job is down): bootstrap rotates inline."""
     await game.db.execute("INSERT INTO seasons (starts_at, ends_at, days, closed) "
-                          "VALUES (now(), now() + interval '7 days', 7, true)")
+                          "VALUES (now() - interval '8 days', now() - interval '2 hours', 7, true)")
     body = await bootstrap(game)
     assert body["season"]["id"] == 2
     assert [r["closed"] for r in await game.db.fetch("SELECT closed FROM seasons ORDER BY id")] == [True, False]

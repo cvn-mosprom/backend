@@ -234,3 +234,31 @@ async def test_state_stays_under_150_kb_after_a_long_session_on_the_big_layout(r
           f"buildings={len(final['sim']['layout']['buildings'])} idempotency={len(final['meta']['idempotency'])}")
     assert size < STATE_LIMIT_BYTES, (f"state is {size} bytes (> {STATE_LIMIT_BYTES}) after {accepted} accepted / "
                                       f"{rejected} rejected commands")
+
+
+async def test_server_season_alignment_against_the_real_mock(real):
+    """The real MockGameApi would roll a long-closed season to id + 1 by itself; the API pins the state to the server's
+    season first, so the sim lands on the server season (id 3) with the mock's reset semantics and the layout kept."""
+    await real.db.execute("INSERT INTO seasons (starts_at, ends_at, days, closed) VALUES "
+                          "(now() - interval '30 days', now() - interval '20 days', 7, true),"
+                          "(now() - interval '19 days', now() - interval '10 days', 7, true),"
+                          "(now() - interval '1 day', now() + interval '6 days', 7, false)")
+    boot = await bootstrap(real)
+    GameSnapshot.model_validate(boot["snapshot"])
+    sid, season = 3, boot["season"]
+    assert season["id"] == sid and boot["snapshot"]["season"]["id"] == sid and boot["snapshot"]["season"]["closed"] is False
+    assert boot["snapshot"]["season"]["endsAt"] == season["endsAt"]
+    assert (await command(real, 0, key(1), BREW_TANK)).status_code == 200
+    await real.db.execute(
+        "UPDATE factories SET season_id = 1, state = jsonb_set(jsonb_set(jsonb_set(jsonb_set(state, '{sim,stars}', '123'), "
+        "'{sim,shipped}', '{\"kvas\": 5}'), '{sim,rejected}', '2'), '{season}', "
+        "(state->'season') || '{\"id\": 1, \"startsAt\": 1000, \"endsAt\": 2000}'::jsonb)")
+    again = await bootstrap(real)  # stale state: season 1, long closed
+    snap = again["snapshot"]
+    GameSnapshot.model_validate(snap)
+    assert again["season"]["id"] == sid and snap["season"]["id"] == sid and snap["season"]["closed"] is False
+    assert (snap["factory"]["stars"], snap["factory"]["shipped"], snap["factory"]["rejected"]) == (0, {}, 0)
+    assert [b["kind"] for b in snap["factory"]["layout"]["buildings"]] == ["brew_tank"]  # factory kept
+    row = await factory_row(real)
+    assert row["season_id"] == sid and row["state"]["season"]["id"] == sid and row["version"] == 1
+    assert (await bootstrap(real))["snapshot"]["season"]["id"] == sid  # stable

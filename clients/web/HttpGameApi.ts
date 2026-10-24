@@ -41,6 +41,69 @@ export interface SeasonInfo {
 	endsAt: number;
 }
 
+/** Version of the privacy-policy text shown next to the consent checkbox (LeadForm.svelte / PrivacyText.svelte). Bump it with the text. */
+export const CONSENT_TEXT_VERSION = '2026-10-v1';
+
+/** Fields of the case form beyond the vendored LeadForm (all optional on the wire; ISO dates YYYY-MM-DD). */
+export interface LeadFormExtras {
+	birthDate?: string;
+	phone?: string;
+	email?: string;
+	telegram?: string;
+	direction?: string;
+	/** Profession id (kvasovar|operator|adjuster|lab|storekeeper|forklift|kipia); defaults to LeadForm.roleId. */
+	vacancy?: string;
+	readyFrom?: string;
+	readiness?: 'now' | 'season' | 'later';
+	practiceType?: 'paid' | 'free' | 'job';
+	consentTextVersion?: string;
+}
+
+/** GET /api/leads/me (the owner's view; no HR notes). */
+export interface LeadView {
+	id: number;
+	seasonId: number;
+	status: 'new' | 'contacted' | 'interview' | 'rejected' | 'hired';
+	tags: string[];
+	fullName: string;
+	birthDate: string | null;
+	phone: string | null;
+	email: string | null;
+	telegram: string | null;
+	university: string;
+	direction: string | null;
+	course: string | null;
+	vacancy: string | null;
+	readyFrom: string | null;
+	readiness: string | null;
+	practiceType: string | null;
+	consent: boolean;
+	consentAt: string;
+	consentTextVersion: string;
+	consentRevokedAt: string | null;
+	bestProfession: string | null;
+	seasonPlace: number | null;
+	quizScore: number | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface QuizProgress {
+	score: number;
+	answered: number;
+	total: number;
+	completed: boolean;
+}
+
+export interface QuizQuestions {
+	questions: { id: string; text: string; options: string[] }[];
+	progress: QuizProgress & { answeredIds: string[] };
+}
+
+export interface QuizResult extends QuizProgress {
+	results: { questionId: string; correct: boolean; correctAnswer: number; explanation: string }[];
+}
+
 export interface HttpGameApiOptions {
 	/** Origin + optional prefix, no trailing slash. '' = same origin (default). */
 	baseUrl?: string;
@@ -157,6 +220,7 @@ export class HttpGameApi implements GameApi {
 	private queue: Promise<unknown> = Promise.resolve();
 	private inflightSync: Promise<GameSnapshot> | null = null;
 	private booting: Promise<GameSnapshot> | null = null;
+	private _lastLeadError: ApiError | null = null;
 
 	constructor(opts: HttpGameApiOptions = {}) {
 		this.opts = opts;
@@ -247,23 +311,76 @@ export class HttpGameApi implements GameApi {
 		return this.getJson<SeasonSummary>('/api/season/summary');
 	}
 
-	async submitLead(form: LeadForm): Promise<{ ok: boolean }> {
+	/** POST /api/leads. The vendored form sends fullName/contact/university/course/roleId/consent; the case form's extra
+	 *  fields (birthDate, phone, email, telegram, direction, vacancy, readyFrom, readiness, practiceType) are passed through
+	 *  when the form provides them. `contact` is mapped to phone/email/telegram by the server (by format).
+	 *  `consentTextVersion` is the version of the privacy text the form shows (server: 403 consent_required without it).
+	 *  ok:false = form-level failure, see `lastLeadError` (403 age_required|consent_required, 422 validation_error);
+	 *  409 lead_already_exists counts as ok (the application is on file; also what a retry after a lost response gets). */
+	async submitLead(form: LeadForm & LeadFormExtras): Promise<{ ok: boolean }> {
+		this._lastLeadError = null;
 		try {
-			await this.sendJson('POST', '/api/leads', form);
+			await this.sendJson('POST', '/api/leads', { ...form, consentTextVersion: form.consentTextVersion ?? CONSENT_TEXT_VERSION });
 			return { ok: true };
 		} catch (e) {
-			// 403 age_required|consent_required, 409 lead_already_exists, 422 validation_error: form-level failures
-			if (e instanceof ApiError && [403, 409, 422].includes(e.status)) return { ok: false };
+			if (e instanceof ApiError && [403, 409, 422].includes(e.status)) {
+				this._lastLeadError = e;
+				return { ok: e.code === 'lead_already_exists' };
+			}
 			throw e;
 		}
 	}
 
+	/** Why the last submitLead() answered ok:false (or that the lead already existed); null after a clean success. */
+	get lastLeadError(): ApiError | null { return this._lastLeadError; }
+
+	/** GET /api/leads/me: the player's latest lead (their own data, incl. tags/status/consentRevokedAt), null when none. */
+	async myLead(): Promise<LeadView | null> {
+		try {
+			return await this.getJson<LeadView>('/api/leads/me');
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 404) return null;
+			throw e;
+		}
+	}
+
+	/** DELETE /api/leads/me: revoke the consent (152-FZ). Idempotent; false when there is no lead. */
+	async revokeLead(): Promise<boolean> {
+		try {
+			await this.sendJson('DELETE', '/api/leads/me');
+			return true;
+		} catch (e) {
+			if (e instanceof ApiError && e.status === 404) return false;
+			throw e;
+		}
+	}
+
+	/** GET /api/quiz/questions: the bank without answers + the player's progress. */
+	quizQuestions(): Promise<QuizQuestions> {
+		return this.getJson<QuizQuestions>('/api/quiz/questions');
+	}
+
+	/** POST /api/quiz/answer: a batch, checked on the server. Throws ApiError: 422 unknown_question|invalid_answer_format,
+	 *  409 quiz_already_completed (answers are final). */
+	quizAnswer(answers: { questionId: string; answer: number }[]): Promise<QuizResult> {
+		return this.sendJson<QuizResult>('POST', '/api/quiz/answer', { answers });
+	}
+
+	/** POST /api/events {events:[{name, props?, ts}]} (<= 50, names from analytics.ts). `ts` is clamped to the server clock
+	 *  (+5 s): the server rejects a batch with an event more than 60 s ahead, which a skewed phone clock would trigger.
+	 *  4xx (a poison batch) is dropped; network errors, 429 and 5xx throw, so analytics.ts keeps the batch and retries. */
 	async track(events: { name: string; props?: Record<string, unknown>; ts: number }[]): Promise<void> {
 		if (!events.length) return;
+		const max = this.now() + 5000;
+		const batch = events.slice(0, 50).map((e) => ({ ...e, ts: Math.min(e.ts, max) }));
 		try {
-			await this.sendJson('POST', '/api/events', { events });
-		} catch {
-			/* analytics is best effort */
+			await this.sendJson('POST', '/api/events', { events: batch });
+		} catch (e) {
+			if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 429) {
+				console.warn('analytics batch dropped', e.code);
+				return;
+			}
+			throw e;
 		}
 	}
 
@@ -405,7 +522,7 @@ export class HttpGameApi implements GameApi {
 		}
 	}
 
-	private async http(method: 'GET' | 'POST', path: string, body?: unknown, query?: Record<string, string>): Promise<HttpResult> {
+	private async http(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown, query?: Record<string, string>): Promise<HttpResult> {
 		const qs = query ? `?${new URLSearchParams(query)}` : '';
 		const ctl = new AbortController();
 		const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
@@ -439,7 +556,7 @@ export class HttpGameApi implements GameApi {
 	}
 
 	/** GET/POST with the passive-request policy: retry network errors / 502-504 up to twice, honour Retry-After once. */
-	private async sendJson<T>(method: 'GET' | 'POST', path: string, body?: unknown, query?: Record<string, string>): Promise<T> {
+	private async sendJson<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown, query?: Record<string, string>): Promise<T> {
 		let netTries = 0;
 		let throttled = false;
 		for (;;) {

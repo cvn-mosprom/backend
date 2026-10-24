@@ -8,6 +8,9 @@ Not a game: just enough deterministic semantics to test the API around it.
     behind the API's own checks), `acceptOrder` is rejected without `code` (the generic fallback), tick/undo/redo are
     rejected like the real sim does until `history_in_state` is switched on (then undo/redo are ordinary accepted commands
     and `/health` says `historyInState: true`); `bloat` pads the state of every command (state size guard);
+  * season: `state.sim.stars` (when present) is the star count of the snapshot; `/v1/bootstrap` + `/v1/advance` emulate the
+    mock's own season roll (MockGameApi.rollSeason: `now - season.endsAt >= 1 h` -> id + 1, stars = 0) and count it in
+    `self.rolls`, so a test can prove that the API's server-side alignment keeps the sim from ever rolling by itself;
   * `calls` records every request body so tests can assert what the API forwarded and with which `now`.
 """
 from __future__ import annotations
@@ -29,7 +32,8 @@ PLACE_COST = 100
 def make_snapshot(state: dict[str, Any], now: int) -> dict[str, Any]:
     return {
         "serverTime": now,
-        "factory": {"name": state["name"], "credits": state["credits"], "stars": state["stars"],
+        "factory": {"name": state["name"], "credits": state["credits"],
+                    "stars": state.get("sim", {}).get("stars", state["stars"]),
                     "level": state["level"], "xp": state["xp"], "shipped": dict(state["shipped"]),
                     "quality": 0.5, "lastTick": state["lastTick"]},
         "season": dict(state["season"]),
@@ -47,6 +51,7 @@ class FakeSim:
         self.delay = 0.0  # seconds slept before answering (to make requests overlap)
         self.history_in_state = False  # S1U landed: /health flag + undo/redo accepted
         self.bloat = 0  # bytes of padding added to the state by every command
+        self.rolls = 0  # how many times the emulated mock rolled the season by itself
         self.health_calls = 0  # /health is not recorded in `calls` (existing tests pin the /v1 call lists)
 
     # ---- plumbing
@@ -92,6 +97,14 @@ class FakeSim:
         state["lastTick"] = eff
         return gap
 
+    def _mock_roll(self, state: dict[str, Any], now: int) -> None:
+        season = state.get("season")
+        if isinstance(season, dict) and isinstance(season.get("endsAt"), int) and now - season["endsAt"] >= H:
+            season.update(id=season["id"] + 1, startsAt=now, endsAt=now + 7 * 24 * H)
+            sim = state.setdefault("sim", {})
+            sim.update(stars=0, shipped={}, rejected=0)
+            self.rolls += 1
+
     def bootstrap(self, b: dict[str, Any]) -> dict[str, Any]:
         now = b["now"]
         if b["state"] is None:
@@ -102,11 +115,13 @@ class FakeSim:
         else:
             state = copy.deepcopy(b["state"])
             self._catch_up(state, now)
+            self._mock_roll(state, state["lastTick"])
         return {"state": state, "snapshot": make_snapshot(state, state["lastTick"])}
 
     def advance(self, b: dict[str, Any]) -> dict[str, Any]:
         state = copy.deepcopy(b["state"])
         gap = self._catch_up(state, b["now"], b.get("capHours", 8))
+        self._mock_roll(state, state["lastTick"])
         return {"state": state, "snapshot": make_snapshot(state, state["lastTick"]), "advancedMs": gap}
 
     def snapshot(self, b: dict[str, Any]) -> dict[str, Any]:

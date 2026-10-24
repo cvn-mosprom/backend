@@ -63,10 +63,17 @@ Auth: inside Telegram it sends `Authorization: tma <WebApp.initData>`; otherwise
 | 429 | wait `Retry-After` (0.5..10 s) once, retry with the same key |
 | network error / 502-504 | up to 2 retries (0.3 s, 0.9 s) with the same key |
 
-`leaderboard`, `visit`, `seasonSummary`, `submitLead`, `track` call `GET /api/season/leaderboard?tab=`,
-`GET /api/factory/{id}`, `GET /api/season/summary`, `POST /api/leads`, `POST /api/events {events:[...]}`. These
-endpoints land in later sprints: response bodies are passed through as-is, so adapt field names there when they exist
-(`submitLead` returns `{ok:false}` on 403/409/422; `track` never throws).
+`leaderboard`, `visit`, `seasonSummary` call `GET /api/season/leaderboard?tab=`, `GET /api/factory/{id}`, `GET /api/season/summary`.
+
+### Leads, quiz, events (S5; independent of the sim)
+
+| Method | Endpoint | Notes |
+|---|---|---|
+| `submitLead(form)` | `POST /api/leads` | the vendored form (`fullName, contact, university, course, roleId, consent`) works as is: `contact` is mapped to phone/email/telegram by format, `roleId` is the vacancy, `consentTextVersion` is added from `CONSENT_TEXT_VERSION` (bump it with the privacy text). Optional case-form fields (`LeadFormExtras`): `birthDate` (YYYY-MM-DD, 18+), `phone`, `email`, `telegram`, `direction`, `vacancy`, `readyFrom`, `readiness` (`now|season|later`), `practiceType` (`paid|free|job`). Without `birthDate` the server needs the age confirmation (`ageConfirm`), else 403 `age_required`. Returns `{ok:false}` on 403 `age_required|consent_required` and 422 `validation_error` (reason in `lastLeadError`); 409 `lead_already_exists` counts as ok (the lead is on file) |
+| `myLead()` | `GET /api/leads/me` | the owner's lead or `null` |
+| `revokeLead()` | `DELETE /api/leads/me` | 152-FZ consent revocation, idempotent, `false` when there is no lead |
+| `quizQuestions()` / `quizAnswer([{questionId, answer}])` | `GET /api/quiz/questions`, `POST /api/quiz/answer` | answers are option indexes; the server checks them, returns per-answer `correct`, `correctAnswer`, `explanation` and the score; answers are final (409 `quiz_already_completed`) |
+| `track(events)` | `POST /api/events {events}` | <= 50 per batch, names = analytics.ts `EventName`; `ts` is clamped to the server clock; a 4xx batch is dropped, network / 429 / 5xx throw so analytics.ts re-queues |
 
 ## Typecheck
 

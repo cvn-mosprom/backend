@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import orjson
@@ -29,13 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .errors import AppError
 from .leaderboard import display_name, rank_of
+from . import seasons
 from .models import Factory, Season, Shift, User
 from .shift import RULE_CODES, RULES, validate_shift
 from .sim_client import SimClient, now_ms
 
 log = logging.getLogger("mosprom.game")
 
-SEASON_DAYS = 7  # SEASON_DAYS of vendor/frontend content/balance.ts; real rotation arrives in S4
 OFFLINE_CAP_H = 8.0
 IDEMPOTENCY_MAX = 50
 IDEMPOTENCY_TTL_S = 600
@@ -44,7 +45,6 @@ STATE_WARN_BYTES = 150 * 1024  # spec "not more than 150 KB" (guaranteed only af
 # sim rejection reasons that become the top-level error code; every other reason is 422 command_rejected
 TOP_LEVEL_REASONS = frozenset({"daily_limit_exceeded", "minigame_too_short", "impossible_score"})
 SPEED_WINDOW_MS = 60_000  # min distance between speed baselines (see measure_speed)
-SEASON_LOCK_KEY = 0x4D50_5301  # pg_advisory_xact_lock: serialises creation of the first open season
 
 
 # ---------------------------------------------------------------- pure helpers
@@ -223,9 +223,11 @@ def _expect(out: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
 
 @dataclass(frozen=True)
 class _Locked:
-    state: dict[str, Any]
+    state: dict[str, Any]  # already aligned to the server season (seasons.align_state)
     version: int
-    season_id: int
+    season_id: int  # the server season the factory belongs to NOW (may differ from the stored column: it is moved on write)
+    moved: bool = False  # the state was changed by the alignment (season id / bounds): the write must refresh the snapshot
+    season: Season | None = None  # the server season the state is aligned to (None for a row without a state yet)
 
 
 class GameService:
@@ -240,15 +242,23 @@ class GameService:
 
     # ---- db
 
-    @staticmethod
-    async def _lock(session: AsyncSession, user_id: int) -> _Locked:
-        row = (await session.execute(
-            select(Factory.state, Factory.version, Factory.season_id)
-            .where(Factory.user_id == user_id).with_for_update()
-        )).one_or_none()
+    async def _lock(self, session: AsyncSession, user_id: int, *, skip_locked: bool = False) -> _Locked | None:
+        """Row lock + season alignment. The state is rewritten to the server's newest season BEFORE any sim call
+        (app/seasons.py: why the mock's own season roll can then never fire). `skip_locked=True` (background catch-up):
+        None when somebody else holds the row; otherwise a missing factory is 404 factory_not_found."""
+        q = select(Factory.state, Factory.version, Factory.season_id).where(Factory.user_id == user_id)
+        row = (await session.execute(q.with_for_update(skip_locked=skip_locked))).one_or_none()
         if row is None:
+            if skip_locked:
+                return None
             raise AppError("factory_not_found", "Factory not found, call GET /api/bootstrap first")
-        return _Locked(state=row.state, version=row.version, season_id=row.season_id)
+        state, season_id, moved, season = row.state, row.season_id, False, None
+        if state:  # {} = the row bootstrap has just inserted: the fresh state is aligned after the sim created it
+            season = await seasons.current(session, monotonic_now(state), bots_enabled=self.bots_enabled)
+            if season is not None:
+                moved = seasons.align_state(state, season)
+                season_id = season.id
+        return _Locked(state=state, version=row.version, season_id=season_id, moved=moved, season=season)
 
     async def _set_rank(self, session: AsyncSession, season_id: int, user_id: int, snapshot: dict[str, Any],
                         stars: int | None = None) -> None:
@@ -261,7 +271,7 @@ class GameService:
         """State + snapshot + denormalised columns (+ version when a command had an effect), one UPDATE.
         `snapshot=None` (a rejection decided without a catch-up) writes the state only. The snapshot gets the real
         leaderboard rank (computed with the new stars, before the UPDATE) so the stored copy carries it too."""
-        values: dict[str, Any] = {"state": keep_meta(old_state, state), "updated_at": func.now()}
+        values: dict[str, Any] = {"state": keep_meta(old_state, state), "season_id": season_id, "updated_at": func.now()}
         if snapshot is not None:
             values.update(denormalise(snapshot))
             speed = measure_speed(snapshot, state)
@@ -280,22 +290,6 @@ class GameService:
             log.warning("factory state is over the size target", extra={"fields": {
                 "state_bytes": size, "limit_bytes": STATE_WARN_BYTES, "user_id": user_id}})
         await session.execute(update(Factory).where(Factory.user_id == user_id).values(**values))
-
-    @staticmethod
-    async def _ensure_open_season(session: AsyncSession, wall_ms: int) -> int:
-        """Id of the newest open season; creates season 1 when there is none (rotation is S4). Race-safe."""
-        newest = select(Season.id).where(Season.closed.is_(False)).order_by(Season.id.desc()).limit(1)
-        season_id = (await session.execute(newest)).scalar_one_or_none()
-        if season_id is not None:
-            return season_id
-        await session.execute(select(func.pg_advisory_xact_lock(SEASON_LOCK_KEY)))
-        season_id = (await session.execute(newest)).scalar_one_or_none()  # created while we waited?
-        if season_id is None:
-            starts = datetime.fromtimestamp(wall_ms / 1000, tz=timezone.utc)
-            season_id = (await session.execute(
-                insert(Season).values(starts_at=starts, ends_at=starts + timedelta(days=SEASON_DAYS), days=SEASON_DAYS)
-                .returning(Season.id))).scalar_one()
-        return season_id
 
     @staticmethod
     async def _log_shift(session: AsyncSession, user_id: int, season_id: int, cmd: dict[str, Any],
@@ -335,9 +329,9 @@ class GameService:
         player = player_info(user)
         wall = now_ms()
         async with self.sm() as session, session.begin():
-            season_id = await self._ensure_open_season(session, wall)
+            season = await seasons.ensure(session, wall, bots_enabled=self.bots_enabled)
             await session.execute(  # race-safe create-on-first-call; a rollback below removes the row again
-                pg_insert(Factory).values(user_id=user.id, season_id=season_id, name=player["name"], state={},
+                pg_insert(Factory).values(user_id=user.id, season_id=season.id, name=player["name"], state={},
                                           is_bot=user.is_bot)
                 .on_conflict_do_nothing(index_elements=[Factory.user_id]))
             locked = await self._lock(session, user.id)
@@ -348,8 +342,11 @@ class GameService:
                 now = wall
                 out = await self.sim.bootstrap(None, player, now)  # fresh factory
             state, snapshot = _expect(out, "state", "snapshot")
-            await self._persist(session, user.id, locked.season_id, locked.state, state, snapshot)
-            season = (await session.execute(select(Season).where(Season.id == locked.season_id))).scalar_one()
+            season = locked.season or season
+            if not locked.state:  # fresh factory: the sim built it with its own season 1 (now .. now + 7 d)
+                seasons.align_state(state, season)
+                seasons.patch_snapshot(snapshot, season, now)
+            await self._persist(session, user.id, season.id, locked.state, state, snapshot)
             season_out = {"id": season.id, "startsAt": _ms(season.starts_at), "endsAt": _ms(season.ends_at)}
         features = {**FEATURES, "undo": await self.sim.history_in_state()}  # outside the lock; cached 60 s, fail-closed
         return {"version": locked.version, "serverTime": now, "season": season_out,
@@ -412,7 +409,8 @@ class GameService:
                              "result": {"message": message}, "at": now}
                 state = with_idempotency(locked.state, state, entry)
                 await self._persist(session, user.id, locked.season_id, locked.state, state,
-                                    None if rule else snapshot, version=new_version if rejected is None else None)
+                                    None if rule and not locked.moved else snapshot,
+                                    version=new_version if rejected is None else None)
                 if rejected is None and cmd.get("type") == "submitShift":
                     await self._log_shift(session, user.id, locked.season_id, cmd, state)
         if replay is not None:
@@ -474,3 +472,54 @@ class GameService:
         if row.snapshot is None:
             raise AppError("sim_unavailable", "Simulation service is unavailable and no snapshot is stored yet")
         return {"version": row.version, "serverTime": now_ms(), "snapshot": row.snapshot, "degraded": True}
+
+    # ---- POST /internal/top/advance (background catch-up of the leaderboard head)
+
+    async def background_advance(self, user_id: int) -> bool:
+        """Lazy catch-up of one factory for the leaderboard (reason=background): row lock with SKIP LOCKED, one short
+        transaction, NO version check and NO version bump (the player's open tab never gets a 409 from it). False =
+        somebody holds the row (a player request in flight): skipped, the next run takes it."""
+        async with self.sm() as session, session.begin():
+            locked = await self._lock(session, user_id, skip_locked=True)
+            if locked is None or not locked.state:
+                return False
+            out = await self.sim.advance(locked.state, monotonic_now(locked.state), OFFLINE_CAP_H, "background")
+            state, snapshot = _expect(out, "state", "snapshot")
+            await self._persist(session, user_id, locked.season_id, locked.state, state, snapshot)
+        return True
+
+    async def top_advance(self, limit: int = 200, budget_s: float = 240.0) -> dict[str, Any]:
+        """Advance the top-`limit` real players (general tab: stars desc) of the current season one by one. A locked row
+        is skipped, a sim outage stops the run (`sim_down`), any other failure of one factory is counted and the run goes on.
+        -> {advanced, skipped, failed, ms, sim_down, pending, season_id}."""
+        t0 = time.perf_counter()
+        async with self.sm() as session:
+            season = await seasons.newest(session)
+            if season is None or season.closed or seasons.is_over(season, now_ms()):
+                return {"advanced": 0, "skipped": 0, "failed": 0, "ms": 0, "sim_down": False, "pending": 0,
+                        "season_id": season.id if season else None, "season_open": False}
+            ids = list((await session.execute(
+                select(Factory.user_id).where(Factory.season_id == season.id, Factory.is_bot.is_(False))
+                .order_by(Factory.stars.desc(), Factory.user_id.asc()).limit(limit))).scalars())
+        advanced = skipped = failed = done = 0
+        sim_down = False
+        for uid in ids:
+            if time.perf_counter() - t0 > budget_s:
+                break
+            done += 1
+            try:
+                if await self.background_advance(uid):
+                    advanced += 1
+                else:
+                    skipped += 1
+            except AppError as e:
+                failed += 1
+                log.warning("background advance failed", extra={"fields": {"user_id": uid, "code": e.code}})
+                if e.code == "sim_unavailable":
+                    sim_down = True
+                    break
+            except Exception:
+                failed += 1
+                log.exception("background advance crashed", extra={"fields": {"user_id": uid}})
+        return {"advanced": advanced, "skipped": skipped, "failed": failed, "ms": round((time.perf_counter() - t0) * 1000),
+                "sim_down": sim_down, "pending": len(ids) - done, "season_id": season.id, "season_open": True}

@@ -7,6 +7,8 @@
 # Optional profiles:
 #   pgbouncer     transaction pooling in front of db. Also set in .env:  DB_HOST=pgbouncer DB_PORT=6432 PGBOUNCER=1
 #   sim-replicas  a second sim container aliased to `sim` (Docker DNS round-robin; the API's SIM_URL stays http://sim:8080)
+#   backup        pg_dump -Fc every BACKUP_INTERVAL_H hours into ./backups (keeps BACKUP_KEEP files); manual: scripts/backup.sh,
+#                 scripts/restore.sh.   docker compose --profile backup up -d backup
 #
 # Everything published on the host is bound to 127.0.0.1 except caddy (80/443).
 
@@ -23,6 +25,9 @@ x-logging: &logging
 # migrate always talks to db directly (DDL must not go through transaction pooling).
 x-db-url: &db-url postgresql+asyncpg://${POSTGRES_USER:-mosprom}:${POSTGRES_PASSWORD:-mosprom}@${DB_HOST:-db}:${DB_PORT:-5432}/${POSTGRES_DB:-mosprom}
 x-db-url-direct: &db-url-direct postgresql+asyncpg://${POSTGRES_USER:-mosprom}:${POSTGRES_PASSWORD:-mosprom}@db:5432/${POSTGRES_DB:-mosprom}
+
+# One secret shared by api and bot for /internal/* (X-Internal-Token). The dev default is refused by the api under APP_ENV=prod.
+x-internal-token: &internal-token ${INTERNAL_TOKEN:-dev-internal-token}
 
 x-env-file: &env-file
   - path: .env
@@ -41,6 +46,7 @@ x-sim: &sim
   # image is pinned to the vendored frontend commit (lib/sim): a lib/sim bump = new tag = new sim image
   image: mosprom-sim:${SIM_COMMIT:-dev}
   restart: unless-stopped
+  mem_limit: 640m # ~100 MB per Node worker at idle; SIM_WORKERS (1..4) bounds the total
   env_file: *env-file
   environment:
     PORT: "8080"
@@ -62,6 +68,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    mem_limit: 256m
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"
@@ -87,8 +94,14 @@ services:
       PGBOUNCER: ${PGBOUNCER:-0} # 1 only with the pgbouncer profile (asyncpg: statement_cache_size=0)
       REDIS_URL: redis://redis:6379/0
       SIM_URL: http://sim:8080
+      INTERNAL_TOKEN: *internal-token
+      # uvicorn worker processes (WEB_CONCURRENCY). Keep <= 4: each worker holds a DB pool of DB_POOL_SIZE+DB_MAX_OVERFLOW
+      # (5+5), so 4 workers = 40 of Postgres' 100 connections. The sim is the CPU hog, not the API.
+      WEB_CONCURRENCY: ${API_WORKERS:-2}
     expose:
       - "8000"
+    mem_limit: 768m
+    stop_grace_period: 15s
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -125,6 +138,7 @@ services:
   db:
     image: postgres:16-alpine # one pinned major, no version-specific features (spec: Блок. Стек)
     restart: unless-stopped
+    mem_limit: 1g
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mosprom}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mosprom}
@@ -144,6 +158,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 384m # maxmemory 256mb below + overhead
     # Caches / counters only (rate limit, idempotency cache, leaderboard cache, initData cache); no game state,
     # so no persistence. volatile-lru: only keys that have a TTL may be evicted.
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
@@ -186,6 +201,9 @@ services:
       MAX_CLIENT_CONN: "1000"
       DEFAULT_POOL_SIZE: "20"
       LISTEN_PORT: "6432"
+      # asyncpg startup parameters (statement_timeout) are not accepted in transaction mode, so the api enforces its 3 s
+      # with command_timeout (PGBOUNCER=1) and pgbouncer cancels anything longer than 4 s on its own.
+      QUERY_TIMEOUT: "4"
     expose:
       - "6432"
     depends_on:
@@ -209,10 +227,40 @@ services:
       DATABASE_URL: *db-url
       PGBOUNCER: ${PGBOUNCER:-0} # 1 only with the pgbouncer profile (asyncpg: statement_cache_size=0)
       REDIS_URL: redis://redis:6379/0
+      API_INTERNAL_URL: http://api:8000 # in-network only: caddy does not proxy /internal/*
+      INTERNAL_TOKEN: *internal-token
+    mem_limit: 384m
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      api:
+        condition: service_started # the bot's jobs call the api; it retries, so no healthy-gate
+    logging: *logging
+
+  # pg_dump -Fc into ./backups every BACKUP_INTERVAL_H hours (first dump right at start), newest BACKUP_KEEP kept.
+  # Off by default: docker compose --profile backup up -d backup.   Restore: scripts/restore.sh <file>.
+  backup:
+    image: postgres:16-alpine # same major as db => compatible pg_dump
+    profiles: ["backup"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh", "--loop"]
+    environment:
+      PGHOST: db
+      PGPORT: "5432" # direct, never through pgbouncer
+      PGUSER: ${POSTGRES_USER:-mosprom}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-mosprom}
+      PGDATABASE: ${POSTGRES_DB:-mosprom}
+      BACKUP_DIR: /backups
+      BACKUP_INTERVAL_H: ${BACKUP_INTERVAL_H:-6}
+      BACKUP_KEEP: ${BACKUP_KEEP:-28}
+    volumes:
+      - ./backups:/backups
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+    mem_limit: 256m
+    depends_on:
+      db:
         condition: service_healthy
     logging: *logging
 

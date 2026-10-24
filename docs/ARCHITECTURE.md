@@ -136,3 +136,113 @@ and `TEST_REDIS_URL` (default redis://127.0.0.1:56380/0).
 - **Bots:** `python -m app.seed_bots [--count 40] [--progress P] [--floor 0.2]` (in compose: `docker compose exec api python -m app.seed_bots`).
   Idempotent; bot i = user `tg_id = -1000000 - i`, factory `state = {bot:{final,g,quality,speed,lines,lemonade}, sim:{layout}}`; `grow_bots()` is the
   function for the later growth job (monotonic inside a season, moves bots into a new season).
+
+## Round 3 coordination (S4 part B, S5, S7-early run in parallel)
+
+- **Background jobs** run only in the bot process (APScheduler), but the bot never touches factory state itself: it calls
+  internal API endpoints `POST /internal/...` protected by header `X-Internal-Token: $INTERNAL_TOKEN` (constant-time compare;
+  missing/wrong -> 401 unauthorized; the internal router is not exposed by Caddy — Caddy proxies only /api/*, /health, /ready).
+  The bot may read the DB directly for analytics/lead statuses (S6).
+- **Alembic chain:** 0004 (exists) -> `0005_seasons` (S4 part B) -> `0006_leads_quiz_events` (S5) -> later ones. Revision ids
+  are exactly these strings.
+- Shared files `api/app/models.py` and `api/app/main.py`: only append new classes / router includes with small Edit calls,
+  re-read right before editing (another worker may have changed it).
+- **Leads (S5):** table `leads` (user_id, season_id, full_name, birth_date, phone/email/telegram (at least one), university,
+  direction, course, vacancy (profession id), ready_from/readiness, practice_type, consent bool, consent_at,
+  consent_text_version, consent_revoked_at, tags text[], status new|contacted|interview|rejected|hired, hr_note, best_profession,
+  season_place, quiz_score, created_at, updated_at; unique (user_id, season_id)). Table `outbox` (id, kind, payload jsonb,
+  created_at, sent_at, attempts, last_error) — the API inserts `lead_created` in the same transaction as the lead; the bot (S6)
+  delivers it. Tables `quiz_answers` (user_id, question_id, correct, answer, answered_at, pk(user_id, question_id)) and
+  `events` (id, user_id, name, props jsonb, ts, source, received_at; indexes (name, ts), (user_id, ts)).
+- **Bots (is_bot users)** are excluded from funnel/export/sources/HR analytics everywhere.
+
+## S7 decisions (stabilisation, early part)
+
+- **Circuit breaker** (`sim_client.CircuitBreaker`, per process): `SIM_BREAKER_THRESHOLD` (5) consecutive sim failures (timeout, connection
+  error, 5xx, invalid body; a sim 4xx does not count) open it for `SIM_BREAKER_OPEN_S` (10 s): every sim call fails fast with the usual
+  503 `sim_unavailable` (`details.reason = "circuit_open"`, `Retry-After`) without touching the network; then exactly one half-open probe.
+  Transitions are logged (`breaker_state`, `consecutive_failures`, `opened_total`); the access log carries `breaker_state` while it is not closed.
+  `factory/me` keeps its degraded path (it catches `sim_unavailable`), leads / quiz / events / leaderboard never call the sim.
+- **Timeouts:** DB `statement_timeout` 3 s + `lock_timeout` 2 s as asyncpg `server_settings` (`DB_STATEMENT_TIMEOUT_MS`, `DB_LOCK_TIMEOUT_MS`;
+  not for migrations); with `PGBOUNCER=1` (no startup parameters in transaction pooling) the same 3 s is asyncpg `command_timeout` plus
+  pgbouncer `QUERY_TIMEOUT=4`. Both surface as 503 `db_unavailable` with `details.reason` `statement_timeout` / `lock_timeout` (other DB errors stay 500).
+  Whole request `REQUEST_TIMEOUT_S` (5): the middleware cancels the handler and answers 503 `timeout` (`Retry-After: 1`, `details.timeout_s`);
+  paths under `/internal/` are exempt (`middleware.NO_TIMEOUT_PREFIXES`). Requests slower than `SLOW_REQUEST_MS` (1000) log
+  `"slow request"` at WARNING with `duration_ms` and `slow: true`.
+- **INTERNAL_TOKEN** (api + bot; `API_INTERNAL_URL=http://api:8000` for the bot): `APP_ENV=prod` needs >= 16 chars and not a placeholder -
+  otherwise the api raises at startup (lifespan) and `/ready` lists `INTERNAL_TOKEN` as missing (`config_error`). Caddy answers 404 for `/internal/*`.
+- **Compose:** `API_WORKERS` -> uvicorn `WEB_CONCURRENCY` (default 2, keep <= 4), `mem_limit`s, profile `backup` (`scripts/backup.sh` loop,
+  `scripts/restore.sh`), `restart: unless-stopped` on every long-running service. E2E: `e2e/test_s7_resilience.py` (`E2E_DOCKER=1`).
+
+## S4 decisions (part B: season rotation, internal jobs)
+
+- **Rotation** (`api/app/seasons.py`): a season closes when `now >= ends_at` (`closed`, `closed_at`; final standings frozen into
+  `season_results` (season_id, user_id, place, stars, quality, speed_bph, bottles, is_bot; migration 0005): stars desc, user id asc, bots only while
+  BOTS_ENABLED). The next season opens when `now >= previous ends_at + 1 h` (SEASON_ROLL_H, = the mock's constant), starts at the moment it is
+  opened and lasts SEASON_DAYS = 7. The 1 h counts from `ends_at`, not from when the job noticed (so a late job opens the next season at once).
+  `rotate()` is idempotent and race-safe: cheap pre-check without a lock, then `pg_advisory_xact_lock` + re-read. It never locks factory rows, so
+  it may run inside a factory write transaction (no lock cycles). Factories are NOT bulk-updated: a factory moves to the new season lazily, the
+  next time it is loaded under its row lock (`factories.season_id` and the denormalised columns follow from that write). Until then it still
+  shows in the old (closed) season; the frozen standings are in `season_results`. Known limits: the leaderboard of a CLOSED season is still
+  computed live from `factories` (members leave it as they move on) and production of a stale factory between its last visit and `ends_at` is
+  credited to the new season when it comes back (the mock's catch-up has one `seasonOpen` flag per interval).
+- **State alignment** (`seasons.align_state`, called by `GameService._lock` on every locked load: bootstrap, command, advance, factory/me,
+  background): `state.season.{id,startsAt,endsAt}` := the server's newest season BEFORE the sim call; when the id differs the mock's reset runs
+  (`state.sim.stars = 0`, `shipped = {}`, `rejected = 0`; factory, credits, level, xp, collection stay; `shiftsLeft` / `shiftsDay` untouched). A fresh
+  factory is aligned after the sim created it and `snapshot.season` is patched in place (id / bounds / closed / dayIndex), no second sim call.
+  **Why the mock's own `rollSeason` never fires:** it runs in bootstrap/advance when `now - state.season.endsAt >= 1 h`. The state's season is always the
+  server's newest one, and the API rotates inline (`seasons.current`) whenever `now >= newest.ends_at + 1 h`, so the state's season is open or closed
+  for less than 1 h at every sim call. The sim's `seasonOpen = now < season.endsAt` therefore agrees with the server; during the 1 h gap the
+  snapshot says `season.closed = true` with the old id and bootstrap returns that closed season.
+- **Internal endpoints** (`api/app/routes/internal.py`, `X-Internal-Token`, 401 `unauthorized` when missing / wrong / `INTERNAL_TOKEN` unset;
+  no rate limit, no request timeout, Caddy answers 404):
+  `POST /internal/seasons/rotate` -> `{closed:[ids], opened:id|null}` (a newly opened season also gets the bots right away);
+  `POST /internal/top/advance {limit:200 (1..1000)}` -> `{advanced, skipped, failed, ms, sim_down, pending, season_id, season_open}`: the top-N non-bot
+  players of the newest season by stars, one by one, each in its own short transaction (`SELECT .. FOR UPDATE SKIP LOCKED`, locked = `skipped`),
+  `reason=background`, cap 8 h, no version check, no version bump; `sim_unavailable` stops the run (`sim_down`, `pending` = not tried),
+  another error counts as `failed` and the run goes on; nothing to do while the newest season is over;
+  `POST /internal/bots/grow` -> `{bots, season_id, progress}` (`seed_bots.grow_current`: real season progress, monotonic inside a season for
+  stars / speed / quality / credits / xp / bottles, takes the season advisory lock, no-op `skipped: no_open_season` during the gap).
+- **Bot jobs** (`bot/app/jobs.py`, `API_INTERNAL_URL` default http://api:8000, `INTERNAL_TOKEN`): `seasons_rotate` every 1 min, `top_advance` every
+  12 min (+-90 s jitter, body `{limit:200}`), `bots_grow` every 10 min (+-30 s jitter); `max_instances=1`, `coalesce=True`; every job logs and
+  swallows errors (HTTP error, timeout, refused connection, missing token). aiohttp client (already an aiogram dependency).
+
+## S5 decisions (leads, quiz, events)
+
+Everything below is DB + Redis only: no sim call anywhere (tests run with a sim that is down and counts attempts; e2e stops the sim container).
+Alembic `0006` (down_revision `0005`: the revision ids are the short strings `0001`..`0006`, the file names carry the words).
+
+- **POST /api/leads** (limit `leads` 5/min, 201, body camelCase or snake_case): required `fullName` (2..120), `university`, >= 1 contact, `consent: true`
+  + `consentTextVersion`. Contacts: `phone` / `email` / `telegram` and/or the legacy `contact` (classified by format: e-mail, phone -> `+7...`,
+  telegram username; stored bare, without `@`). Optional case fields: `birthDate` (YYYY-MM-DD), `direction` (free text), `course` ("4", 4, "Выпускник"),
+  `vacancy` or legacy `roleId` (one of the 7 profession ids), `readyFrom` (date), `readiness` (`now|season|later`), `practiceType` (`paid|free|job`) -
+  optional because the vendored form does not send them yet. Check order: 401 -> 429 -> 422 (shape and fields) -> 403 `consent_required` -> 403
+  `age_required` -> 409 `lead_already_exists` (`details.revoked`). Age: `birthDate` < 18 -> 403 even if the age was confirmed; no `birthDate` ->
+  needs `users.age_confirmed` or `snapshot.player.ageConfirmed` (the real `ageConfirm` lives in the sim state; `users.age_confirmed` is not synced
+  from it yet), else 403. Season = `seasons.ensure` (newest season, same as factory writes); one lead per (user, season) via `ON CONFLICT DO NOTHING`.
+- **Tags** (`leads.tags`): `senior` (course >= 4 or graduate), `profile_direction` (keyword match of `direction` against
+  `leads.PROFILE_DIRECTIONS`: food tech, chemistry, biotech, mechanics, automation, electrical, logistics, quality), `ready_for_season`
+  (`readiness` now|season, or `readyFrom` within 120 days), `high_quiz` (>= 8 of 10 correct). Enrichment from existing data, else null:
+  `best_profession` (stored snapshot skills), `season_place` (general rank), `quiz_score` (quiz_answers, null until the first answer). A later quiz
+  answer batch refreshes `quiz_score` + `high_quiz` of the player's non-revoked leads.
+- **Outbox**: `lead_created` / `lead_revoked` rows (`payload` snake_case; lead_created carries the card fields: lead_id, user_id, tg_id, source,
+  full_name, university, direction, course, vacancy, practice_type, readiness, phone, email, telegram, tags, quiz_score, best_profession,
+  season_place, created_at) are inserted in the SAME transaction as the lead / revocation; delivery and `sent_at` are the bot's (S6).
+- **GET /api/leads/me**: latest lead (owner's view, no `hr_note`), 404 `lead_not_found`. **DELETE /api/leads/me**: `consent_revoked_at = now` on every
+  non-revoked lead of the player, status untouched, 204; repeating it is a no-op 204 (no second outbox row); 404 without any lead. A revoked lead
+  still blocks a new one in the same season (409, `details.revoked`). Bot/analytics must exclude `consent_revoked_at IS NOT NULL` from the active
+  funnel and mailings. Season summary: `leadStatus` = latest lead status, `"revoked"` after revocation, else null.
+- **Personal data in logs**: access log has no bodies/queries; engine `hide_parameters=True` (no SQL parameters in DBAPI error messages);
+  validation errors carry field paths and messages only, never input values.
+- **Quiz**: bank in `api/app/quiz_bank.py` (10 questions from the museum facts; correct index only there). `GET /api/quiz/questions` ->
+  `{questions:[{id,text,options}], progress:{score,answered,total,completed,answeredIds}}`. `POST /api/quiz/answer` body `[{questionId, answer}]` or
+  `{answers:[...]}` (answer = option index; <= 10 items) -> `{results:[{questionId, correct, correctAnswer, explanation}], score, answered, total,
+  completed}`. All-or-nothing; 422 `unknown_question` | `invalid_answer_format` | `validation_error` (shape, duplicates), 409
+  `quiz_already_completed` for a re-answered question or a finished quiz (answers are final); limit `quiz` 30/min (GET and POST share it).
+  Summary `quizResult` = `{score, answered, total, completed}` or null.
+- **POST /api/events** (limit `events` 10 batches/min): body `{events:[{name, props?, ts}]}` (or a bare list), `ts` = ms since epoch or ISO string
+  (missing = now). All-or-nothing: > 50 -> 422 `too_many_events`, name outside `events.EVENT_NAMES` (= analytics.ts `EventName`, drift test) ->
+  `invalid_event_name`, `ts` > now + 60 s -> `future_timestamp`, props > 2 KB / bad types / body NUL -> `validation_error`, body > 256 KB -> 413.
+  Response `{accepted:n}`; `source` = `users.source`; `users.is_bot` batches are validated and dropped (`accepted: 0`).
+- **Client** (`clients/web/HttpGameApi.ts`): `submitLead` (adds `consentTextVersion`, 409 counts as ok, `lastLeadError`), `myLead`, `revokeLead`,
+  `quizQuestions`, `quizAnswer`, `track` (clamps `ts` to the server clock, drops 4xx batches, rethrows network/429/5xx so analytics.ts re-queues).

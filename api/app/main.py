@@ -11,7 +11,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from .db import make_engine, make_redis, make_sessionmaker
 from .errors import install_error_handlers
 from .middleware import RequestContextMiddleware, setup_logging
-from .routes import board, game, health, me
+from .routes import board, events, game, health, internal, leads, me, quiz
 from .settings import Settings, get_settings
 from .sim_client import SimClient
 
@@ -20,6 +20,10 @@ log = logging.getLogger("mosprom.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    cfg: Settings = app.state.settings
+    if cfg.is_prod and not cfg.internal_token_ok:  # S7: the bot's /internal/* calls must never run on a guessable token
+        log.critical("refusing to start: INTERNAL_TOKEN is missing, too short (< 16) or a placeholder (APP_ENV=prod)")
+        raise RuntimeError("INTERNAL_TOKEN is required when APP_ENV=prod")
     yield
     await app.state.sim.aclose()
     if app.state.redis is not None:
@@ -44,14 +48,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = make_engine(settings) if settings.database_url.strip() else None
     app.state.sessionmaker = make_sessionmaker(app.state.engine) if app.state.engine is not None else None
     app.state.redis = make_redis(settings) if settings.redis_url.strip() else None
-    app.state.sim = SimClient(settings.sim_url, settings.sim_timeout_s)
+    app.state.sim = SimClient(settings.sim_url, settings.sim_timeout_s, breaker_threshold=settings.sim_breaker_threshold,
+                              breaker_open_s=settings.sim_breaker_open_s)
 
     install_error_handlers(app)
     app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
-    app.add_middleware(RequestContextMiddleware)  # outermost: request id, access log, last-resort 500
+    # outermost: request id, access log, 5 s request cap (not /internal/*), slow-request log, last-resort 500
+    app.add_middleware(RequestContextMiddleware, request_timeout_s=settings.request_timeout_s,
+                       slow_ms=settings.slow_request_ms)
 
     app.include_router(health.router)
     app.include_router(me.router)
     app.include_router(game.router)
     app.include_router(board.router)  # after game: /api/factory/me before /api/factory/{player_id}
+    app.include_router(leads.router)  # S5: independent of the sim (leads, quiz, events)
+    app.include_router(quiz.router)
+    app.include_router(events.router)
+    app.include_router(internal.router)  # /internal/* for the bot's jobs: token-protected, not proxied by caddy
     return app

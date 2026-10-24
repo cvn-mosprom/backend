@@ -228,6 +228,9 @@ class LeaderboardService:
             if f is None:
                 raise AppError("factory_not_found", "Factory not found, call GET /api/bootstrap first")
             place, total = await rank_of(session, f.season_id, user.id, bots_enabled=self.bots_enabled, mine=f.stars)
+            from .leads import lead_status  # S5 (local: leads imports this module)
+            from .quiz import quiz_result
+            quiz, lead = await quiz_result(session, user.id), await lead_status(session, user.id)
         snap = f.snapshot if isinstance(f.snapshot, dict) else {}
         fac = snap.get("factory") if isinstance(snap.get("factory"), dict) else {}
         layout = fac.get("layout") if isinstance(fac.get("layout"), dict) else {}
@@ -242,8 +245,8 @@ class LeaderboardService:
             "skus": len(collection), "bestProfession": best, "bestProfessionReason": reason,
             # beyond the frontend type (spec: credits, stars, level, quiz result, lead status)
             "seasonId": f.season_id, "credits": f.credits, "stars": f.stars, "level": f.level,
-            "quizResult": None,  # S5
-            "leadStatus": None,  # S5
+            "quizResult": quiz,  # {score, answered, total, completed} or null (S5)
+            "leadStatus": lead,  # status of the latest lead, 'revoked' after a consent revocation, or null (S5)
         }
 
 

@@ -14,6 +14,9 @@ class Settings:
     webapp_url: str = ""
     log_level: str = "INFO"
     app_env: str = "dev"
+    # Background jobs call the api's /internal/* in-network (caddy never proxies it); the token is the api's INTERNAL_TOKEN.
+    api_internal_url: str = "http://api:8000"
+    internal_token: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -28,4 +31,6 @@ class Settings:
             webapp_url=webapp.rstrip("/") if webapp else "",
             log_level=e.get("LOG_LEVEL", "INFO").strip().upper() or "INFO",
             app_env=e.get("APP_ENV", "dev").strip().lower() or "dev",
+            api_internal_url=(e.get("API_INTERNAL_URL", "").strip() or "http://api:8000").rstrip("/"),
+            internal_token=e.get("INTERNAL_TOKEN", "").strip(),
         )

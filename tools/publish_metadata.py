@@ -13,14 +13,19 @@ provenance = subprocess.check_output(["docker", "buildx", "imagetools", "inspect
 data = json.loads(provenance)
 if not isinstance(data, dict) or not data:
     raise SystemExit("Build provenance missing")
-data["mospromSource"] = {"backendSha": os.environ["GITHUB_SHA"], "frontendSha": os.environ["FRONTEND_SHA"]}
+parameters = data.get("buildDefinition", {}).get("externalParameters")
+if not isinstance(parameters, dict):
+    raise SystemExit("Build provenance must contain SLSA v1 external parameters")
+source = {"backendSha": os.environ["GITHUB_SHA"], "frontendSha": os.environ["FRONTEND_SHA"]}
 if os.environ.get("RELEASE_PROFILE"):
-    data["mospromSource"]["profile"] = os.environ["RELEASE_PROFILE"]
-    data["mospromSource"]["runId"] = os.environ["GITHUB_RUN_ID"]
-    data["mospromSource"]["runAttempt"] = os.environ["GITHUB_RUN_ATTEMPT"]
+    source["profile"] = os.environ["RELEASE_PROFILE"]
+    source["runId"] = os.environ["GITHUB_RUN_ID"]
+    source["runAttempt"] = os.environ["GITHUB_RUN_ATTEMPT"]
+# SLSA's parameters are extensible. A top-level custom field is discarded by cosign's typed serializer.
+parameters["mospromSource"] = source
 Path("provenance.json").write_text(json.dumps(data))
 subprocess.run(["cosign", "sign", "--yes", ref], check=True)
-subprocess.run(["cosign", "attest", "--yes", "--type", "slsaprovenance", "--predicate", "provenance.json", ref], check=True)
+subprocess.run(["cosign", "attest", "--yes", "--type", "slsaprovenance1", "--predicate", "provenance.json", ref], check=True)
 result = {"name": name, "repository": repository, "digest": digest,
                                          "sourceSha": os.environ["GITHUB_SHA"], "frontendSha": os.environ["FRONTEND_SHA"],
                                          "profile": os.environ.get("RELEASE_PROFILE", "distributed-v1")}

@@ -139,7 +139,7 @@ jobs:
           platforms: linux/amd64
           outputs: type=oci,dest=/tmp/image.tar
           tags: ghcr.io/cvn-mosprom/${{ matrix.name }}:sha-${{ github.sha }}
-          provenance: mode=max
+          provenance: mode=max,version=v1
           sbom: true
           build-args: |
             SIM_COMMIT=${{ steps.source.outputs.frontend }}
@@ -161,6 +161,7 @@ jobs:
           skopeo copy --all --preserve-digests oci-archive:/tmp/image.tar "docker://ghcr.io/cvn-mosprom/${IMAGE}:sha-${GITHUB_SHA}"
         env: {IMAGE: '${{ matrix.name }}'}
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with: {cosign-release: v3.0.5}
       - name: Sign image and provenance, write immutable coordinates
         env:
           IMAGE: ${{ matrix.name }}
@@ -229,7 +230,7 @@ jobs:
           platforms: linux/amd64
           outputs: type=oci,dest=/tmp/image.tar
           tags: ghcr.io/cvn-mosprom/${{ matrix.name }}:prototype-${{ github.sha }}
-          provenance: mode=max
+          provenance: mode=max,version=v1
           sbom: true
           build-args: |
             SIM_COMMIT=${{ steps.source.outputs.frontend }}

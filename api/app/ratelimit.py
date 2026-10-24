@@ -37,13 +37,15 @@ LIMITS: dict[str, Limit] = {
     "leaderboard": Limit(60),
     "events": Limit(10, burst=6),  # the web client flushes every 5 s = 12/min (+ a flush on close): 16 fit
     "leads": Limit(5),
+    "public_leads": Limit(5),
+    "landing_events": Limit(30),
     "quiz": Limit(30),
     "auth": Limit(5),  # S14 web login (POST /api/auth/web/code, /start): per IP, whatever Authorization header is sent
     "auth_poll": Limit(60, burst=20),  # S14 POST /api/auth/web/poll: the page polls every ~2 s (30/min); per IP
     "hr": Limit(120),  # C3: every /api/hr/* route (the CRM web client), per user
     "default": Limit(60),
 }
-IP_LIMITS = frozenset({"auth", "auth_poll"})  # unauthenticated endpoints: always counted per IP, never per user
+IP_LIMITS = frozenset({"auth", "auth_poll", "public_leads", "landing_events"})  # unauthenticated endpoints: always counted per IP, never per user
 
 
 async def _subject(request: Request, name: str = "") -> str:

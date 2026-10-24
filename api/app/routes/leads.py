@@ -41,3 +41,27 @@ async def revoke_lead(user: CurrentUser, leads: Leads) -> Response:
     """Revoke the consent (152-FZ). Idempotent: 204 again when already revoked, 404 lead_not_found without a lead."""
     await leads.revoke(user)
     return Response(status_code=204)
+
+
+# Public handlers intentionally have no CurrentUser dependency. Their receipts expose no personal data.
+from uuid import UUID
+from ..public_landing import PublicLeadIn, LandingBatch, create_public, revoke_public, ingest_landing
+
+
+@router.post('/leads/public', status_code=201, dependencies=[Depends(rate_limit('public_leads'))])
+async def public_lead(body: PublicLeadIn, leads: Leads) -> dict[str, Any]:
+    return await create_public(leads, body)
+
+
+@router.delete('/leads/public/{submission_id}', status_code=204, response_class=Response,
+               dependencies=[Depends(rate_limit('public_leads'))])
+async def public_revoke(submission_id: UUID, request: Request, leads: Leads) -> Response:
+    auth = request.headers.get('Authorization', '')
+    token = auth[7:] if auth.startswith('Bearer ') else ''
+    await revoke_public(leads, submission_id, token)
+    return Response(status_code=204)
+
+
+@router.post('/events/public', dependencies=[Depends(rate_limit('landing_events'))])
+async def landing_events(body: LandingBatch, leads: Leads) -> dict[str, int]:
+    return await ingest_landing(leads, body)

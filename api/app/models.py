@@ -152,14 +152,20 @@ class Lead(Base):
     __table_args__ = (
         sa.Index("uq_leads_user_season_active", "user_id", "season_id", unique=True,
                  postgresql_where=sa.text("consent_revoked_at IS NULL")),
+        sa.UniqueConstraint("submission_id", name="uq_leads_submission_id"),
         sa.CheckConstraint("status in ('new','contacted','interview','rejected','hired')", name="status"),
         sa.CheckConstraint("practice_type is null or practice_type in ('paid','free','job')", name="practice_type"),
         sa.CheckConstraint("institution_kind is null or institution_kind in ('vuz','college')", name="institution_kind"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
     season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"), nullable=False)
+    source: Mapped[str | None] = mapped_column(Text)
+    visitor_id: Mapped[str | None] = mapped_column(Text)
+    submission_id: Mapped[str | None] = mapped_column(Text)
+    submission_hash: Mapped[str | None] = mapped_column(Text)
+    receipt_token_hash: Mapped[str | None] = mapped_column(Text)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
     birth_date: Mapped[date | None] = mapped_column(sa.Date)
     phone: Mapped[str | None] = mapped_column(Text)
@@ -409,3 +415,18 @@ class LeadEvent(Base):
 
 
 Index("ix_lead_events_lead_created", LeadEvent.lead_id, LeadEvent.created_at)
+
+
+class LandingEvent(Base):
+    """Anonymous landing funnel: only enumerated properties, no candidate/contact payloads."""
+    __tablename__ = "landing_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    visitor_id: Mapped[str | None] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    props: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_landing_events_created", LandingEvent.created_at)

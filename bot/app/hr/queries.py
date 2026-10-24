@@ -37,8 +37,8 @@ FUNNEL_STEPS: tuple[tuple[str, str], ...] = (
 LEAD_COLS = """l.id, l.user_id, l.season_id, l.full_name, l.birth_date, l.phone, l.email, l.telegram, l.university,
     l.institution_kind, l.direction, l.course, l.vacancy, l.ready_from, l.readiness, l.practice_type, l.tags, l.status, l.hr_note,
     l.best_profession, l.season_place, l.quiz_score, l.consent_revoked_at, l.created_at, l.updated_at,
-    u.tg_id, u.username AS tg_username, u.source"""
-LEAD_FROM = "FROM leads l JOIN users u ON u.id = l.user_id"
+    u.tg_id, u.username AS tg_username, coalesce(l.source, u.source) AS source"""
+LEAD_FROM = "FROM leads l LEFT JOIN users u ON u.id = l.user_id"
 PAGE_SIZE = 10
 
 
@@ -88,7 +88,7 @@ def like_pattern(s: str) -> str:
 
 
 def _lead_where(f: LeadFilter, *, revoked_ok: bool) -> tuple[str, dict[str, Any]]:
-    conds, params = ["u.is_bot = false AND u.is_test = false"], {}
+    conds, params = ["coalesce(u.is_bot, false) = false AND coalesce(u.is_test, false) = false"], {}
     if not (revoked_ok and f.include_revoked):
         conds.append("l.consent_revoked_at IS NULL")
     if f.status:
@@ -253,17 +253,24 @@ async def funnel(s: AsyncSession, season: dict[str, Any]) -> dict[str, Any]:
           (SELECT count(*) FROM factories f JOIN users u ON u.id = f.user_id WHERE f.season_id = :sid AND u.is_bot = false AND u.is_test = false) AS players,
           (SELECT count(*) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE sh.season_id = :sid AND u.is_bot = false AND u.is_test = false) AS shifts,
           (SELECT count(DISTINCT sh.user_id) FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE sh.season_id = :sid AND u.is_bot = false AND u.is_test = false) AS shift_players,
-          (SELECT count(*) FROM leads l JOIN users u ON u.id = l.user_id WHERE l.season_id = :sid AND u.is_bot = false AND u.is_test = false AND l.consent_revoked_at IS NULL) AS leads,
-          (SELECT count(*) FROM leads l JOIN users u ON u.id = l.user_id WHERE l.season_id = :sid AND u.is_bot = false AND u.is_test = false AND l.consent_revoked_at IS NOT NULL) AS revoked
+          (SELECT count(*) FROM leads l LEFT JOIN users u ON u.id = l.user_id WHERE l.season_id = :sid AND coalesce(u.is_bot, false) = false AND coalesce(u.is_test, false) = false AND l.consent_revoked_at IS NULL) AS leads,
+          (SELECT count(*) FROM leads l LEFT JOIN users u ON u.id = l.user_id WHERE l.season_id = :sid AND coalesce(u.is_bot, false) = false AND coalesce(u.is_test, false) = false AND l.consent_revoked_at IS NOT NULL) AS revoked
         """), {"sid": season["id"]})).mappings().one()
     return {"steps": [(n, label, by.get(n, 0)) for n, label in FUNNEL_STEPS], "tables": dict(tbl)}
 
 
 async def sources(s: AsyncSession, limit: int = 30) -> list[dict[str, Any]]:
     rows = (await s.execute(text("""
-        SELECT coalesce(nullif(u.source, ''), '(без метки)') AS src, count(*) AS users,
-               count(*) FILTER (WHERE EXISTS (SELECT 1 FROM leads l WHERE l.user_id = u.id AND l.consent_revoked_at IS NULL)) AS leads
-        FROM users u WHERE u.is_bot = false AND u.is_test = false GROUP BY 1 ORDER BY users DESC, src LIMIT :n"""), {"n": limit})).mappings().all()
+        WITH game AS (
+          SELECT coalesce(nullif(u.source, ''), '(без метки)') AS src, count(*) AS users,
+                 count(*) FILTER (WHERE EXISTS (SELECT 1 FROM leads l WHERE l.user_id = u.id AND l.consent_revoked_at IS NULL)) AS leads
+          FROM users u WHERE u.is_bot = false AND u.is_test = false GROUP BY 1
+        ), landing AS (
+          SELECT coalesce(nullif(source, ''), '(без метки)') AS src, 0 AS users, count(*) AS leads
+          FROM leads WHERE user_id IS NULL AND consent_revoked_at IS NULL GROUP BY 1
+        ) SELECT src, sum(users)::bigint AS users, sum(leads)::bigint AS leads FROM (
+          SELECT * FROM game UNION ALL SELECT * FROM landing
+        ) combined GROUP BY src ORDER BY users DESC, leads DESC, src LIMIT :n"""), {"n": limit})).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -294,12 +301,12 @@ async def stats(s: AsyncSession, quiz_total: int, now: datetime | None = None,
         WHERE n >= :total"""), {"total": quiz_total, "ids": list(quiz_ids)})).mappings().one()
     out["quiz_completed"], out["quiz_avg"] = int(quiz["completed"]), float(quiz["avg_score"])
     st = (await s.execute(text(
-        "SELECT l.status, count(*) AS n FROM leads l JOIN users u ON u.id = l.user_id "
-        "WHERE u.is_bot = false AND u.is_test = false AND l.consent_revoked_at IS NULL GROUP BY l.status"))).all()
+        "SELECT l.status, count(*) AS n FROM leads l LEFT JOIN users u ON u.id = l.user_id "
+        "WHERE coalesce(u.is_bot, false) = false AND coalesce(u.is_test, false) = false AND l.consent_revoked_at IS NULL GROUP BY l.status"))).all()
     out["leads"] = {r.status: int(r.n) for r in st}
     out["leads_revoked"] = (await s.execute(text(
-        "SELECT count(*) FROM leads l JOIN users u ON u.id = l.user_id "
-        "WHERE u.is_bot = false AND u.is_test = false AND l.consent_revoked_at IS NOT NULL"))).scalar_one()
+        "SELECT count(*) FROM leads l LEFT JOIN users u ON u.id = l.user_id "
+        "WHERE coalesce(u.is_bot, false) = false AND coalesce(u.is_test, false) = false AND l.consent_revoked_at IS NOT NULL"))).scalar_one()
     return out
 
 

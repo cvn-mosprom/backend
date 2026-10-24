@@ -522,7 +522,7 @@ async def test_log_event_in_the_callers_transaction(hr, sm):
 
 async def test_log_event_kinds_system_actor_and_defaults(hr, sm):
     lead = await make_lead(hr.db)
-    assert EVENT_KINDS == ("view", "status", "assign", "note", "message", "export", "tag")
+    assert EVENT_KINDS == ("view", "status", "assign", "note", "message", "export", "tag", "achievement")
     async with sm() as session, session.begin():
         for kind in EVENT_KINDS:
             await log_event(session, lead, None, kind)  # system actor, no payload

@@ -11,14 +11,16 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 MSK = timezone(timedelta(hours=3))  # Moscow has no DST: a fixed offset avoids needing tzdata in the slim image
 
-STATUSES = ("new", "contacted", "interview", "rejected", "hired")
+STATUSES = ("new", "screening", "interview", "offer", "hired", "rejected", "reserve")  # C4: the CRM pipeline
 STATUS_LABELS = {
-    "new": "🆕 Новый", "contacted": "📞 Связались", "interview": "🗓 Собеседование",
-    "rejected": "❌ Отказ", "hired": "✅ Принят",
+    "new": "🆕 Новый", "screening": "📞 Скрининг", "interview": "🗓 Собеседование", "offer": "📝 Оффер",
+    "hired": "✅ Принят", "rejected": "❌ Отказ", "reserve": "🗂 Резерв",
 }
+LEGACY_STATUSES = {"contacted": "screening"}  # pre-C4 name: old cards in HR chats still carry `ls:<id>:contacted` buttons
 STATUS_ALIASES = {  # /leads новый ...
-    "новый": "new", "новые": "new", "связались": "contacted", "контакт": "contacted", "собес": "interview",
-    "собеседование": "interview", "отказ": "rejected", "принят": "hired", "принятые": "hired",
+    "новый": "new", "новые": "new", "скрининг": "screening", "связались": "screening", "контакт": "screening",
+    "contacted": "screening", "собес": "interview", "собеседование": "interview", "оффер": "offer", "отказ": "rejected",
+    "принят": "hired", "принятые": "hired", "резерв": "reserve",
 }
 TAGS = ("senior", "profile_direction", "ready_for_season", "high_quiz")
 PROFESSIONS = {  # content ProfessionId -> title (vendor/frontend professions.ts)
@@ -32,6 +34,27 @@ INSTITUTION_KINDS = {"vuz": "вуз", "college": "колледж"}  # leads.inst
 # these two in sync. Answers to other ids (the S5 bank, q1978...) are not counted.
 QUIZ_TOTAL = 8
 QUIZ_QUESTION_IDS = ("q_year", "q_olymp", "q_kvas", "q_izba", "q_white", "q_cities", "q_fields", "q_space")
+
+# C5: achievements in the lead card. Titles = api/app/achievements/catalog.py (the bot has no api import; a test in api/tests
+# keeps the two in sync). An unknown id is shown as is.
+ACHIEVEMENT_TITLES = {
+    "first_line": "Первая линия", "first_order": "Первый заказ", "bottles_1k": "Тысяча бутылок",
+    "bottles_10k": "10 000 бутылок", "bottles_100k": "100 000 бутылок", "sku_5": "Пять напитков",
+    "sku_all": "Весь ассортимент", "no_defects": "Без брака", "otk_control": "Контроль ОТК",
+    "kvasovar_practice": "Практика: Квасовар", "kvasovar_ace": "Ас: Квасовар",
+    "operator_practice": "Практика: Оператор линии", "operator_ace": "Ас: Оператор линии",
+    "adjuster_practice": "Практика: Наладчик", "adjuster_ace": "Ас: Наладчик",
+    "lab_practice": "Практика: Лаборант ОТК", "lab_ace": "Ас: Лаборант ОТК",
+    "storekeeper_practice": "Практика: Кладовщик", "storekeeper_ace": "Ас: Кладовщик",
+    "forklift_practice": "Практика: Водитель погрузчика", "forklift_ace": "Ас: Водитель погрузчика",
+    "kipia_practice": "Практика: Инженер КИПиА", "kipia_ace": "Ас: Инженер КИПиА", "all_rounder": "Универсал",
+    "reaction_fast": "Реакция", "week_streak": "Неделя на смене", "full_days": "Полный день",
+    "on_time_10": "Точно в срок", "no_debts": "Без долгов", "museum_all": "Музей", "quiz_6": "Знаток завода",
+    "quiz_8": "Эксперт завода", "season_top50": "Топ-50 сезона", "season_top10": "Топ-10 сезона",
+    "season_top3": "Призёр сезона", "season_regular": "Сезонник", "mentor": "Наставник",
+    "perfect_shift": "Идеальная смена",
+}
+TIER_ICONS = {"gold": "🥇", "silver": "🥈", "bronze": "🥉"}
 
 LEAD_PREFIX = "ls"  # callback_data: ls:<lead_id>:<status>
 
@@ -85,6 +108,18 @@ def card_from_payload(p: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def render_achievements(c: Mapping[str, Any]) -> str | None:
+    """C5: «🏅 ОД: 120 · 🥇 «Призёр сезона», 🥈 «Без брака»» - achievement points and the top-3 earned (by points). None when the
+    candidate has no game profile (a landing lead) or nothing to show."""
+    points, top = c.get("achievement_points"), c.get("top_achievements") or []
+    if points is None and not top:
+        return None
+    parts = [f"ОД: <b>{int(points or 0)}</b>"]
+    if top:
+        parts.append(", ".join(f"{TIER_ICONS.get(a.get('tier'), '')} «{esc(ACHIEVEMENT_TITLES.get(a['id'], a['id']))}»".strip() for a in top))
+    return "🏅 " + " · ".join(parts)
+
+
 def render_card(c: Mapping[str, Any], *, new: bool = False, today: date | None = None) -> str:
     today = today or datetime.now(MSK).date()
     lid = c.get("id")
@@ -132,6 +167,9 @@ def render_card(c: Mapping[str, Any], *, new: bool = False, today: date | None =
         game.append(f"квиз: {c['quiz_score']}/{QUIZ_TOTAL}")
     if game:
         lines.append("🎮 " + ", ".join(game))
+    ach = render_achievements(c)
+    if ach:
+        lines.append(ach)
     lines.append(f"📍 Источник: {esc(c['source']) if c.get('source') else 'прямой заход'}")
     lines.append(f"Статус: <b>{status_label(c.get('status') or 'new')}</b>")
     notes = [n for n in (c.get("hr_note") or "").splitlines() if n.strip()][-3:]
@@ -151,8 +189,9 @@ def status_keyboard(lead_id: int, current: str | None) -> InlineKeyboardMarkup:
         mark = "• " if s == current else ""
         return InlineKeyboardButton(text=mark + status_label(s), callback_data=f"{LEAD_PREFIX}:{lead_id}:{s}")
 
-    return InlineKeyboardMarkup(inline_keyboard=[[btn("new"), btn("contacted"), btn("interview")],
-                                                 [btn("rejected"), btn("hired")]])
+    return InlineKeyboardMarkup(inline_keyboard=[[btn("new"), btn("screening"), btn("interview")],
+                                                 [btn("offer"), btn("hired")],
+                                                 [btn("rejected"), btn("reserve")]])
 
 
 def card_keyboard(c: Mapping[str, Any]) -> InlineKeyboardMarkup | None:
@@ -171,8 +210,9 @@ def render_leads_page(rows: Sequence[Mapping[str, Any]], total: int, page: int, 
     for r in rows:
         tags = (" " + " ".join("#" + esc(t) for t in r["tags"])) if r.get("tags") else ""
         rev = " 🚫" if r.get("consent_revoked_at") else ""
+        pts = f" · {int(r['achievement_points'])} ОД" if r.get("achievement_points") is not None else ""
         out.append(f"/lead_{r['id']} {esc(r['full_name'])} · {esc(r['university'])} · "
-                   f"{STATUS_LABELS.get(r['status'], r['status'])}{rev}{tags} · {r['created_at'].astimezone(MSK):%d.%m}")
+                   f"{STATUS_LABELS.get(r['status'], r['status'])}{rev}{tags}{pts} · {r['created_at'].astimezone(MSK):%d.%m}")
     return "\n".join(out)
 
 

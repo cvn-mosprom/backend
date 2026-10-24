@@ -50,8 +50,9 @@ def test_funnel_steps_are_known_api_events():
 
 
 def test_parse_filter():
-    f = queries.parse_filter("contacted РХТУ им. Менделеева #senior all")
-    assert (f.status, f.tag, f.include_revoked, f.university) == ("contacted", "senior", True, "РХТУ им. Менделеева")
+    f = queries.parse_filter("screening РХТУ им. Менделеева #senior all")
+    assert (f.status, f.tag, f.include_revoked, f.university) == ("screening", "senior", True, "РХТУ им. Менделеева")
+    assert queries.parse_filter("contacted").status == "screening" and queries.parse_filter("оффер").status == "offer"
     assert queries.parse_filter("новый") == queries.LeadFilter(status="new")
     assert queries.parse_filter(None) == queries.LeadFilter()
     assert queries.parse_filter("high_quiz МГУПП").tag == "high_quiz"
@@ -138,7 +139,7 @@ def test_leads_filters_and_all():
             await handlers.on_leads(m, cmd("leads", args))
             return reply_text(m)
 
-        assert "Петров" in await ask("contacted") and "Иванова" not in await ask("contacted")
+        assert "Петров" in await ask("screening") and "Иванова" not in await ask("contacted")  # the old name still filters
         out = await ask("мгупп")  # case-insensitive substring of the university
         assert "Иванова" in out and "Петров" not in out and "Сидорова" not in out
         out = await ask("мгупп all")
@@ -199,7 +200,7 @@ def test_lead_card_command_and_link():
         assert "лет" in card or "год" in card
         kb = m.answer.call_args.kwargs["reply_markup"]
         assert [b.callback_data.split(":")[2] for row in kb.inline_keyboard for b in row] == [
-            "new", "contacted", "interview", "rejected", "hired"]
+            "new", "screening", "interview", "offer", "hired", "rejected", "reserve"]
         m = fake_message(ADMIN)
         await handlers.on_lead_link(m, _link_cmd(lid))
         assert "Иванова Анна" in reply_text(m)
@@ -254,12 +255,12 @@ def test_export_csv_content_and_encoding():
         assert a["лучшая профессия"] == "Лаборант ОТК" and a["место в сезоне"] == "2" and a["источник"] == "ref_1"
         assert a["дата рождения"] == "2003-05-01" and int(a["возраст"]) >= 22
         assert a["квиз (верных из 8)"] == "7" and a["статус"] == "new"
-        assert rows[0]["статус"] == "contacted" and rows[0]["email"] == ""
+        assert rows[0]["статус"] == "screening" and rows[0]["email"] == ""
         assert "Сидорова" not in doc.data.decode("utf-8-sig") and "Бот Ботов" not in doc.data.decode("utf-8-sig")
         assert doc.data.count(b"\r\n") == 3  # header + 2 rows
 
         m = fake_message(ADMIN)  # filters work, and `all` never brings revoked leads into the file
-        await handlers.on_export(m, cmd("export", "contacted all"))
+        await handlers.on_export(m, cmd("export", "screening all"))
         assert [r["ФИО"] for r in _parse_csv(m.answer_document.call_args.args[0])] == ["Петров Борис"]
         m = fake_message(ADMIN)
         await handlers.on_export(m, cmd("export", "МГУПП all"))
@@ -337,7 +338,7 @@ def test_stats_numbers():
             d = await queries.stats(s, QUIZ_TOTAL)
         assert (d["users"], d["new_today"], d["dau"], d["factories"], d["shifts_today"]) == (5, 5, 3, 5, 2)
         assert (d["quiz_started"], d["quiz_completed"], d["quiz_avg"]) == (2, 1, 7.0)
-        assert d["leads"] == {"new": 1, "contacted": 1} and d["leads_revoked"] == 1
+        assert d["leads"] == {"new": 1, "screening": 1} and d["leads_revoked"] == 1
         m = fake_message(ADMIN)
         await handlers.on_stats(m)
         out = reply_text(m)
@@ -439,12 +440,12 @@ def test_set_lead_status_outcomes():
     async def go(sm):
         lid = await _lead_id(sm, "Петров Борис")
         async with sm() as s:
-            assert (await queries.set_lead_status(s, lid, "contacted", "x"))[0] == "unchanged"
+            assert (await queries.set_lead_status(s, lid, "contacted", "x"))[0] == "unchanged"  # legacy name = screening
         async with sm() as s:
             assert (await queries.set_lead_status(s, lid, "nope", "x")) == ("bad_status", None)
         async with sm() as s:
             out, card = await queries.set_lead_status(s, lid, "rejected", "tester", datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc))
-        assert out == "ok" and card["status"] == "rejected" and "2026-01-02 03:04 UTC · tester: contacted → rejected" in card["hr_note"]
+        assert out == "ok" and card["status"] == "rejected" and "2026-01-02 03:04 UTC · tester: screening → rejected" in card["hr_note"]
 
     run_db(go)
 

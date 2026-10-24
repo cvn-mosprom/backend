@@ -10,6 +10,8 @@ from the sim:
   * `university` / `university_id` filter = the exact university NAME (there is no university table: the frontend's
     UNIVERSITIES list is the registry); with a filter the universe, places and `me` are restricted to that university,
     and `me` is omitted for a player of another university;
+  * C2: the `achievements` tab ranks by achievement points (player_scores of the board's season; `scope=season` = the part earned in
+    that season). Only players with points > 0 are on it, so demo bots never are and `me` is absent for a player with none;
   * demo bots (is_bot) are part of the universe unless `bots_enabled` is false (BOTS_ENABLED=0), then they are invisible
     everywhere: rows, places, totals, aggregates, visit.
 """
@@ -25,12 +27,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
+from .achievements import player as ach_player
 from .errors import AppError
-from .models import Factory, Season, User
+from .models import Factory, PlayerScore, Season, User
 
 log = logging.getLogger("mosprom.leaderboard")
 
-TABS = ("general", "quality", "speed", "uni")
+TABS = ("general", "quality", "speed", "uni", "achievements")
+SCOPES = ("all", "season")  # achievements tab: lifetime points | points earned in the season
 BOARD_SIZE = 100
 INVITE_PLACES = 50  # places 1..50 are the invitation zone; inviteCutoff = value at place 50
 UNIVERSITIES_MAX = 50
@@ -61,6 +65,16 @@ def _ms(dt: datetime | None) -> int:
     return int(dt.timestamp() * 1000) if dt else 0
 
 
+def points_column(scope: str, ps=PlayerScore):
+    """Points of the achievements tab (0 for a player without a player_scores row)."""
+    return func.coalesce(ps.season_points if scope == "season" else ps.achievement_points, 0)
+
+
+def _with_scores(q, f=Factory, ps=PlayerScore):
+    """LEFT JOIN player_scores of the factory's season (the factory row is in `q`'s FROM)."""
+    return q.outerjoin(ps, and_(ps.user_id == f.user_id, ps.season_id == f.season_id))
+
+
 def _universe(q, season_id: int, bots_enabled: bool, university: str | None, f=Factory):
     q = q.where(f.season_id == season_id, f.is_test.is_(False))  # e2e / test players are never ranked (S13)
     if not bots_enabled:
@@ -72,10 +86,22 @@ def _universe(q, season_id: int, bots_enabled: bool, university: str | None, f=F
 
 async def rank_of(session: AsyncSession, season_id: int, user_id: int, tab: str = "general", *,
                   bots_enabled: bool = True, university: str | None = None,
-                  mine: int | float | None = None) -> tuple[int, int]:
+                  mine: int | float | None = None, scope: str = "all") -> tuple[int, int]:
     """(place, total) of `user_id` in the universe: 1 + players strictly ahead (higher value, or equal value and lower
     user id). `mine` = the player's own value (default: read from the player's row, which must exist)."""
     other = aliased(Factory)
+    if tab == "achievements":  # universe = players with points; ties by user id like every tab
+        ps = aliased(PlayerScore)
+        ocol = points_column(scope, ps)
+        if mine is None:
+            mine = (await session.execute(select(points_column(scope)).where(
+                PlayerScore.user_id == user_id, PlayerScore.season_id == season_id))).scalar_one_or_none() or 0
+        q = (select(func.count().filter(or_(ocol > mine, and_(ocol == mine, other.user_id < user_id))).label("ahead"),
+                    func.count().label("n")).select_from(other)
+             .outerjoin(ps, and_(ps.user_id == other.user_id, ps.season_id == other.season_id))
+             .where(other.user_id != user_id, ocol > 0))
+        row = (await session.execute(_universe(q, season_id, bots_enabled, university, other))).one()
+        return row.ahead + 1, row.n + 1
     col = column(tab)
     own = select(col).where(Factory.user_id == user_id).scalar_subquery() if mine is None else mine
     ocol = {"quality": other.quality_avg, "speed": other.speed_bph}.get(tab, other.stars)
@@ -100,13 +126,15 @@ class LeaderboardService:
     # ---------------------------------------------------------------- GET /api/season/leaderboard
 
     async def leaderboard(self, user: User, tab: str, limit: int, university: str | None,
-                          season_id: int | None) -> dict[str, Any]:
+                          season_id: int | None, scope: str = "all") -> dict[str, Any]:
         if tab not in TABS:
             raise AppError("invalid_tab", f"Unknown tab {tab!r}", details={"tab": tab, "allowed": list(TABS)})
+        if scope not in SCOPES:
+            raise AppError("invalid_scope", f"Unknown scope {scope!r}", details={"scope": scope, "allowed": list(SCOPES)})
         async with self.sm() as session:
             sid = await self._season(session, season_id)
-            board = await self._board(session, sid, tab, university)
-            me = await self._me(session, user, sid, tab, university)
+            board = await self._board(session, sid, tab, university, scope)
+            me = await self._me(session, user, sid, tab, university, scope)
         pid = str(user.id)
         rows = [{**r, **({"isMe": True} if r["playerId"] == pid else {})} for r in board["rows"][:limit]]
         top = board["rows"]
@@ -135,8 +163,9 @@ class LeaderboardService:
             raise AppError("season_not_found", "No season yet, call GET /api/bootstrap first")
         return sid
 
-    async def _board(self, session: AsyncSession, season_id: int, tab: str, university: str | None) -> dict[str, Any]:
-        key = f"lb:{season_id}:{tab}:{university or ''}:{int(self.bots_enabled)}"
+    async def _board(self, session: AsyncSession, season_id: int, tab: str, university: str | None,
+                     scope: str = "all") -> dict[str, Any]:
+        key = f"lb:{season_id}:{tab}:{university or ''}:{int(self.bots_enabled)}" + (f":{scope}" if tab == "achievements" else "")
         try:
             raw = await self.redis.get(key) if self.redis is not None else None
             cached = orjson.loads(raw) if raw else None
@@ -145,7 +174,7 @@ class LeaderboardService:
             cached = None
         if isinstance(cached, dict) and "rows" in cached:
             return cached
-        board = await self._compute(session, season_id, tab, university)
+        board = await self._compute(session, season_id, tab, university, scope)
         try:
             if self.redis is not None:
                 await self.redis.set(key, orjson.dumps(board).decode(), ex=self.ttl)
@@ -153,12 +182,15 @@ class LeaderboardService:
             log.warning("leaderboard cache write failed: %s", type(e).__name__)
         return board
 
-    async def _compute(self, session: AsyncSession, season_id: int, tab: str, university: str | None) -> dict[str, Any]:
-        col = column(tab)
+    async def _compute(self, session: AsyncSession, season_id: int, tab: str, university: str | None,
+                       scope: str = "all") -> dict[str, Any]:
+        col = points_column(scope) if tab == "achievements" else column(tab)
         q = (select(Factory.user_id, Factory.name, Factory.university, col.label("raw"),
                     User.first_name, User.last_name, User.username, User.tg_id)
              .join(User, User.id == Factory.user_id)
              .order_by(col.desc(), Factory.user_id).limit(BOARD_SIZE))
+        if tab == "achievements":
+            q = _with_scores(q).where(col > 0)
         rows = []
         for i, r in enumerate((await session.execute(_universe(q, season_id, self.bots_enabled, university))).all(), 1):
             row: dict[str, Any] = {
@@ -168,8 +200,10 @@ class LeaderboardService:
             if r.university:
                 row["university"] = r.university
             rows.append(row)
-        total = (await session.execute(_universe(select(func.count()).select_from(Factory), season_id,
-                                                 self.bots_enabled, university))).scalar_one()
+        count_q = select(func.count()).select_from(Factory)
+        if tab == "achievements":
+            count_q = _with_scores(count_q).where(col > 0)
+        total = (await session.execute(_universe(count_q, season_id, self.bots_enabled, university))).scalar_one()
         board: dict[str, Any] = {"rows": rows, "total": total}
         if tab == "uni":
             total_stars = func.sum(Factory.stars)
@@ -180,14 +214,16 @@ class LeaderboardService:
         return board
 
     async def _me(self, session: AsyncSession, user: User, season_id: int, tab: str,
-                  university: str | None) -> dict[str, Any] | None:
-        col = column(tab)
-        mine = (await session.execute(select(Factory.season_id, Factory.name, Factory.university, col.label("raw"))
-                                      .where(Factory.user_id == user.id))).one_or_none()
+                  university: str | None, scope: str = "all") -> dict[str, Any] | None:
+        col = points_column(scope) if tab == "achievements" else column(tab)
+        q = select(Factory.season_id, Factory.name, Factory.university, col.label("raw")).where(Factory.user_id == user.id)
+        mine = (await session.execute(_with_scores(q) if tab == "achievements" else q)).one_or_none()
         if mine is None or mine.season_id != season_id or (university and mine.university != university):
             return None
+        if tab == "achievements" and not mine.raw:  # no points: not on the board
+            return None
         place, total = await rank_of(session, season_id, user.id, tab, bots_enabled=self.bots_enabled,
-                                     university=university, mine=mine.raw)
+                                     university=university, mine=mine.raw, scope=scope)
         row: dict[str, Any] = {"place": place, "playerId": str(user.id), "name": display_name(user),
                                "factoryName": mine.name, "value": shown(tab, mine.raw), "isMe": True,
                                "_place": place, "_total": total}
@@ -209,6 +245,7 @@ class LeaderboardService:
              .join(Factory, Factory.user_id == User.id).where(User.id == int(player_id)))
         async with self.sm() as session:
             r = (await session.execute(q)).one_or_none()
+            ach = await ach_player.points_block(session, r.id) if r is not None else {}
         if r is None or (r.is_bot and not self.bots_enabled) or not isinstance(r.layout, dict):
             raise not_found
         player: dict[str, Any] = {"id": str(r.id), "name": " ".join(p for p in (r.first_name, r.last_name) if p)
@@ -216,7 +253,8 @@ class LeaderboardService:
         if r.f_uni or r.university:
             player["university"] = r.f_uni or r.university
         return {"player": player, "factory": {"name": r.name, "level": r.level, "stars": r.stars,
-                                              "layout": r.layout, "updatedAt": _ms(r.updated_at)}}
+                                              "layout": r.layout, "updatedAt": _ms(r.updated_at)},
+                "achievementPoints": ach["achievementPoints"], "topAchievements": ach["topAchievements"]}  # C2
 
     # ---------------------------------------------------------------- GET /api/season/summary
 
@@ -231,6 +269,7 @@ class LeaderboardService:
             from .leads import lead_status  # S5 (local: leads imports this module)
             from .quiz import quiz_result
             quiz, lead = await quiz_result(session, user.id), await lead_status(session, user.id)
+            ach = await ach_player.points_block(session, user.id, f.season_id)
         snap = f.snapshot if isinstance(f.snapshot, dict) else {}
         fac = snap.get("factory") if isinstance(snap.get("factory"), dict) else {}
         layout = fac.get("layout") if isinstance(fac.get("layout"), dict) else {}
@@ -247,6 +286,9 @@ class LeaderboardService:
             "seasonId": f.season_id, "credits": f.credits, "stars": f.stars, "level": f.level,
             "quizResult": quiz,  # {correct, total, score 0..100, answered, completed, bankTotal} (quiz.quiz_progress) or null
             "leadStatus": lead,  # status of the latest lead, 'revoked' after a consent revocation, or null (S5)
+            # C2: achievement points (lifetime, and the part earned in this season) and the 3 best earned achievements
+            "achievementPoints": ach["achievementPoints"], "seasonPoints": ach["seasonPoints"],
+            "topAchievements": ach["topAchievements"],
         }
 
 

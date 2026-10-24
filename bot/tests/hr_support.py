@@ -216,13 +216,13 @@ async def seed_all(sm: async_sessionmaker[AsyncSession]) -> dict[str, int]:
         await add_shift(s, ids["u1"], 2)
         await add_shift(s, ids["u2"], 2, created=NOW - timedelta(days=1, hours=5))
         await add_shift(s, ids["b1"], 2)
-        # leads: L(u1) new, L(u2) contacted, L(u3) revoked, one by a bot
+        # leads: L(u1) new, L(u2) screening, L(u3) revoked, one by a bot
         ids["l1"] = await add_lead(s, ids["u1"], 2, "Иванова Анна", "МГУПП", tags=["senior", "high_quiz"],
                                    phone="+79991112233", email="anna@example.com", telegram="anna", institution_kind="vuz", direction="Пищевая инженерия",
                                    course="4", vacancy="operator", readiness="season", practice_type="paid",
                                    best_profession="lab", season_place=2, quiz_score=7, birth_date=datetime(2003, 5, 1).date(),
                                    created=NOW - timedelta(hours=3))
-        ids["l2"] = await add_lead(s, ids["u2"], 2, "Петров Борис", "РХТУ", status="contacted", tags=["ready_for_season"],
+        ids["l2"] = await add_lead(s, ids["u2"], 2, "Петров Борис", "РХТУ", status="screening", tags=["ready_for_season"],
                                    phone="+79990000000", institution_kind="college", direction="Розлив", created=NOW - timedelta(hours=2))
         ids["l3"] = await add_lead(s, ids["u3"], 2, "Сидорова Вера", "МГУПП", tags=["senior"], revoked=True,
                                    phone="+79993334455", created=NOW - timedelta(hours=1))

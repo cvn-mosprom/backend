@@ -19,7 +19,7 @@ Bundle (`inputs`), every key optional except `state`:
 ignored, so the cost is a few dict reads.
 
 Result: {version, earned: [{id, season_key, tier, points, evidence}], progress: [{id, season_key, current, target}],
-counters, points}. `earned` lists everything currently satisfied (not only new); `progress` has `current <= target`.
+counters, points, by_profession: {pid: {played, wins, avg}}}. `earned` lists everything currently satisfied (not only new); `progress` has `current <= target`.
 """
 from __future__ import annotations
 
@@ -157,6 +157,11 @@ class _Ctx:
         if source == "state":
             return True
         return {"shifts": self.shifts, "season": self.season_results, "quiz": self.quiz}[source] is not None
+
+
+def professions(state: Any, table_by_profession: Any = None) -> dict[str, dict[str, float]]:
+    """Per-profession {played, wins, avg} from the state, merged with the `shifts` table aggregate (the fit input of C2)."""
+    return _Ctx._professions(_d(_d(_d(state).get("skills")).get("byProfession")), _d(table_by_profession))
 
 
 # ---------------------------------------------------------------- rules: (ctx, achievement) -> [(season_key, current, evidence)]
@@ -343,4 +348,4 @@ def evaluate(inputs: dict[str, Any], *, cheap: bool = False) -> dict[str, Any]:
                 shown = float(a.target) if hit else math.floor(max(cur, 0.0) * 1e4) / 1e4  # never "100/100" before it is earned
                 progress.append({"id": a.id, "season_key": season_key, "current": shown, "target": float(a.target)})
     return {"version": cat.CATALOG_VERSION, "earned": earned, "progress": progress, "counters": counters,
-            "points": sum(e["points"] for e in earned)}
+            "points": sum(e["points"] for e in earned), "by_profession": c.by_prof}  # by_profession: the fit input (C2)

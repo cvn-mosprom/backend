@@ -225,7 +225,8 @@ def _expect(out: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
 
 class CommandBody(dict):  # type: ignore[type-arg]
     """The 200 body of POST /api/command. A plain dict on the wire; `achievements_unlocked` (C1) carries the achievements this
-    command unlocked ([{id, title, description, category, tier, points, hidden, seasonal}]) for the route to use later."""
+    command unlocked ([{id, title, description, category, tier, points, hidden, seasonal}]); C2 puts the same list in the body as
+    `achievementsUnlocked` (a replay returns the list stored in its idempotency entry)."""
 
     achievements_unlocked: list[dict[str, Any]]
 
@@ -430,22 +431,24 @@ class GameService:
                     entry = {"key": key, "ok": False, "code": reason, "version": new_version,
                              "result": {"message": message}, "at": now}
                 state = with_idempotency(locked.state, state, entry)
-                await self._persist(session, user.id, locked.season_id, locked.state, state,
-                                    None if rule and not locked.moved else snapshot,
-                                    version=new_version if rejected is None else None)
                 if rejected is None and cmd.get("type") == "submitShift":
                     await self._log_shift(session, user.id, locked.season_id, cmd, state)
                 if rejected is None:  # C1: achievements, in this transaction (cheap state rules; + shift rules after a shift)
                     unlocked = await achievements.on_command(session, user, locked.season_id, state,
                                                              shift=cmd.get("type") == "submitShift")
+                    if unlocked:  # C2: kept in the idempotency entry (it is in `state`, written below), so a replay returns them too
+                        entry["ach"] = unlocked
+                await self._persist(session, user.id, locked.season_id, locked.state, state,
+                                    None if rule and not locked.moved else snapshot,
+                                    version=new_version if rejected is None else None)
         if replay is not None:
             return await self._replay(*replay)
         await self._idem_put(user.id, key, entry)  # only after the commit
         if rejected is not None:
             raise rejection(rejected[0], rejected[1], new_version, snapshot)
         body = CommandBody({"ok": True, "version": new_version, "result": entry["result"], "events": [],
-                            "snapshot": snapshot, "replayed": False})
-        body.achievements_unlocked = unlocked  # not in the HTTP body yet (C2 adds `achievementsUnlocked`)
+                            "snapshot": snapshot, "replayed": False, "achievementsUnlocked": unlocked})
+        body.achievements_unlocked = unlocked
         return body
 
     async def _replay(self, user_id: int, season_id: int, entry: dict[str, Any], state: dict[str, Any],
@@ -460,7 +463,9 @@ class GameService:
             reason = entry.get("code") if isinstance(entry.get("code"), str) else "rejected"
             message = result.get("message") if isinstance(result.get("message"), str) else "Command rejected"
             raise rejection(reason, message, version, snapshot, replayed=True)
-        return {"ok": True, "version": version, "result": result, "events": [], "snapshot": snapshot, "replayed": True}
+        ach = entry.get("ach") if isinstance(entry.get("ach"), list) else []
+        return {"ok": True, "version": version, "result": result, "events": [], "snapshot": snapshot, "replayed": True,
+                "achievementsUnlocked": ach}
 
     # ---- POST /api/advance
 

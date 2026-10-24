@@ -46,7 +46,7 @@ _ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
 }
 PERMISSIONS = frozenset(p for perms in _ROLE_PERMISSIONS.values() for p in perms)
 
-EVENT_KINDS = ("view", "status", "assign", "note", "message", "export", "tag")
+EVENT_KINDS = ("view", "status", "assign", "note", "message", "export", "tag", "achievement")  # achievement: C2, system-written
 
 
 def permissions_of(role: str) -> list[str]:

@@ -336,7 +336,8 @@ async def test_visit_returns_the_public_cut_only(game):
     resp = await game.get(f"/api/factory/{uid}", headers=dev(5000, "Me"))
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"player", "factory"}
+    assert set(body) == {"player", "factory", "achievementPoints", "topAchievements"}  # C2
+    assert body["achievementPoints"] == 0 and body["topAchievements"] == []
     assert body["player"] == {"id": str(uid), "name": "Alice", "university": "МАИ"}
     assert set(body["factory"]) == {"name", "level", "stars", "layout", "updatedAt"}
     assert body["factory"]["layout"] == LAYOUT and body["factory"]["stars"] == 4321 and body["factory"]["level"] == 3
@@ -388,7 +389,8 @@ async def test_summary_shape_and_values(game):
     assert s == {"place": 51, "total": 61, "inInviteZone": False, "bottles": 12345, "quality": pytest.approx(0.9),
                  "lines": 2, "skus": 2, "bestProfession": "lab",
                  "bestProfessionReason": "лучшие смены — «НАЙДИ БРАК»: 3 из 4, средний счёт 70",
-                 "seasonId": sid, "credits": 4242, "stars": 5050, "level": 3, "quizResult": None, "leadStatus": None}
+                 "seasonId": sid, "credits": 4242, "stars": 5050, "level": 3, "quizResult": None, "leadStatus": None,
+                 "achievementPoints": 0, "seasonPoints": 0, "topAchievements": []}
     await game.db.execute("UPDATE factories SET stars = 9999 WHERE user_id = (SELECT id FROM users WHERE tg_id = 5000)")
     top = (await game.get("/api/season/summary", headers=dev(5000, "Me"))).json()
     assert top["place"] == 2 and top["inInviteZone"] is True

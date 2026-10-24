@@ -13,7 +13,8 @@ from .db import make_engine, make_redis, make_sessionmaker
 from .errors import install_error_handlers
 from .middleware import RequestContextMiddleware, setup_logging
 from .hr.access import NoStoreMiddleware, ensure_seeded
-from .routes import board, events, game, health, hr, internal, leads, me, quiz, webauth
+from .routes import (achievements, board, events, game, health, hr, hr_candidates, hr_reports, hr_vacancies, internal, leads, me,
+                     quiz, webauth)
 from .settings import Settings, get_settings
 from .sim_client import SimClient
 
@@ -22,7 +23,7 @@ log = logging.getLogger("mosprom.app")
 # http-contract.md "Общее": the web client sends X-Telegram-Init-Data / X-Dev-User / Content-Type and reads Retry-After
 CORS_METHODS = ["GET", "POST", "PATCH", "DELETE"]  # PATCH: C3+ /api/hr/* (the dev web client is cross-origin)
 CORS_HEADERS = ["X-Telegram-Init-Data", "X-Dev-User", "Content-Type", "Authorization"]
-CORS_EXPOSE = ["Retry-After", "X-Request-ID"]
+CORS_EXPOSE = ["Retry-After", "X-Request-ID", "Content-Disposition"]  # Content-Disposition: the CSV file name of /api/hr/export.csv
 CORS_MAX_AGE = 600
 
 
@@ -76,6 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(me.router)
     app.include_router(game.router)
     app.include_router(board.router)  # after game: /api/factory/me before /api/factory/{player_id}
+    app.include_router(achievements.router)  # C2: /api/achievements/me, /api/achievements/catalog
     app.include_router(leads.router)  # S5: independent of the sim (leads, quiz, events)
     app.include_router(quiz.router)
     app.include_router(events.router)
@@ -83,4 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(webauth.router)  # S14: web login via the Telegram bot (public + Bearer session)
     app.include_router(webauth.internal_router)  # S14: /internal/auth/* called by the bot
     app.include_router(hr.router)  # C3: /api/hr/* (HR CRM; roles in hr_users)
+    app.include_router(hr_candidates.router)  # C4: /api/hr/candidates, /api/hr/pipeline
+    app.include_router(hr_vacancies.router)  # C5: /api/hr/vacancies
+    app.include_router(hr_reports.router)  # C5: /api/hr/analytics, /api/hr/export.csv
     return app

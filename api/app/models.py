@@ -153,7 +153,7 @@ class Lead(Base):
         sa.Index("uq_leads_user_season_active", "user_id", "season_id", unique=True,
                  postgresql_where=sa.text("consent_revoked_at IS NULL")),
         sa.UniqueConstraint("submission_id", name="uq_leads_submission_id"),
-        sa.CheckConstraint("status in ('new','contacted','interview','rejected','hired')", name="status"),
+        sa.CheckConstraint("status in ('new','screening','interview','offer','hired','rejected','reserve')", name="status"),
         sa.CheckConstraint("practice_type is null or practice_type in ('paid','free','job')", name="practice_type"),
         sa.CheckConstraint("institution_kind is null or institution_kind in ('vuz','college')", name="institution_kind"),
     )
@@ -185,6 +185,10 @@ class Lead(Base):
     consent_revoked_at: Mapped[datetime | None] = _tstz()
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'::text[]"), nullable=False)
     status: Mapped[str] = mapped_column(Text, server_default=text("'new'"), nullable=False)
+    # C4: HR CRM pipeline - responsible HR, when the status last changed, optimistic-lock counter (every change bumps it)
+    assignee_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("hr_users.id", ondelete="SET NULL"))
+    stage_changed_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, server_default=text("1"), nullable=False)
     hr_note: Mapped[str | None] = mapped_column(Text)
     best_profession: Mapped[str | None] = mapped_column(Text)
     season_place: Mapped[int | None] = mapped_column(Integer)
@@ -195,6 +199,11 @@ class Lead(Base):
 
 Index("ix_leads_status_created", Lead.status, Lead.created_at)
 Index("ix_leads_university", Lead.university)
+# C4: list / kanban of the HR CRM (migration 0016)
+Index("ix_leads_created_id", Lead.created_at.desc(), Lead.id.desc())
+Index("ix_leads_status_stage", Lead.status, Lead.stage_changed_at.desc(), Lead.id.desc())
+Index("ix_leads_assignee", Lead.assignee_id, postgresql_where=text("assignee_id IS NOT NULL"))
+Index("ix_leads_user_id", Lead.user_id)
 
 
 class Outbox(Base):
@@ -375,6 +384,7 @@ class PlayerScore(Base):
 
 
 Index("ix_player_scores_season_points", PlayerScore.season_id, PlayerScore.achievement_points.desc())
+Index("ix_player_scores_season_sp", PlayerScore.season_id, PlayerScore.season_points.desc())  # C2: scope=season board
 
 
 # ---------------------------------------------------------------- C3: HR roles and the candidate event log
@@ -430,3 +440,45 @@ class LandingEvent(Base):
 
 
 Index("ix_landing_events_created", LandingEvent.created_at)
+
+
+# ---------------------------------------------------------------- C5: vacancies
+
+class Vacancy(Base):
+    """An open position of the HR CRM. `requirements` = {"competencies": {key: min 0..100}, "achievements": [catalog ids]} (validated
+    by the api, `app.hr.vacancies`); candidates are matched against it by `vacancy_fit` (C2)."""
+
+    __tablename__ = "vacancies"
+    __mapper_args__ = {"eager_defaults": True}
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    profession_id: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    city: Mapped[str] = mapped_column(Text, server_default=text("''"), nullable=False)
+    active: Mapped[bool] = mapped_column(server_default=text("true"), nullable=False)
+    requirements: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("""'{"competencies": {}, "achievements": []}'::jsonb"""), nullable=False)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("hr_users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    updated_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_vacancies_active_profession", Vacancy.active, Vacancy.profession_id)
+
+
+# ---------------------------------------------------------------- C4: candidate notes
+
+class LeadNote(Base):
+    """HR note on a candidate card. The text lives here, not in `lead_events` (analysts read the events, never the notes)."""
+
+    __tablename__ = "lead_notes"
+    __mapper_args__ = {"eager_defaults": True}
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    lead_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False)
+    author_hr_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("hr_users.id", ondelete="SET NULL"))
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_lead_notes_lead_created", LeadNote.lead_id, LeadNote.created_at)

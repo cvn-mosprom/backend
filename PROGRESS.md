@@ -56,3 +56,7 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - C3 done: hr_users roles (analyst < hr < hr_lead < admin), lead_events, /api/hr/me, /api/hr/users, PII masking for analyst, bot uses roles. Migration 0013.
 - Tests: api 1054, bot 146, e2e 360 + 6 skipped.
 - Next: C2 (points/competencies/fit, player API, achievementsUnlocked, outbox notifications gold+seasonal) and C4 (candidates, pipeline, notes, messages) in parallel; then C5, C6.
+- C2 done: competencies + fit (HR only), /api/achievements/me|catalog, achievementsUnlocked, leaderboard tab achievements, ОД in summary/visit, outbox + bot notify gold/seasonal, lead_events achievement (migration 0015).
+- C4 done: /api/hr/candidates list/card/PATCH (version), notes, messages via bot (409 bot_not_started), pipeline, new statuses (migration 0016). Frontend HttpHrApi live tests pass.
+- C5 done: vacancies + matching, analytics, export.csv, ОД in bot (migration 0017).
+- Tests: api 1267, bot 177, e2e 372 + 6 skipped. C6 skipped for now (optional). Bot image must be rebuilt before the bot is started again.

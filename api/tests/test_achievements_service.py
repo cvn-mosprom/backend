@@ -89,12 +89,12 @@ async def add_days(c, uid: int, days: int, per_day: int = 1, start: str = "2026-
 
 # ---------------------------------------------------------------- the hook (a): inside the command
 
-async def test_hook_unlocks_inside_the_command_and_the_http_body_is_unchanged(c):
+async def test_hook_unlocks_inside_the_command_and_the_http_body_lists_them(c):
     uid = await mk(c, 1, state=RICH)
     r = await command(c, 0, key(1), place())
     assert r.status_code == 200, r.text
     assert {"ok", "version", "result", "events", "snapshot", "replayed"} <= set(r.json())
-    assert not any("chiev" in k for k in r.json())  # the HTTP body has no achievements key yet (C2 adds achievementsUnlocked)
+    assert {a["id"] for a in r.json()["achievementsUnlocked"]} == RICH_IDS  # C2: the same list as CommandBody.achievements_unlocked
     assert await earned_ids(c, uid) == RICH_IDS
     rows = await c.db.fetch("SELECT * FROM achievements_earned WHERE user_id = $1", uid)
     assert {r_["granted_via"] for r_ in rows} == {"hook"} and {r_["catalog_version"] for r_ in rows} == {cat.CATALOG_VERSION}
@@ -104,7 +104,7 @@ async def test_hook_unlocks_inside_the_command_and_the_http_body_is_unchanged(c)
     assert all(r_["earned_season_id"] == sid and r_["season_key"] == 0 for r_ in rows)
     ps = await c.db.fetchrow("SELECT * FROM player_scores WHERE user_id = $1", uid)
     assert ps["achievement_points"] == ps["season_points"] == RICH_POINTS and ps["evaluated_at"] is None
-    assert json.loads(ps["competency"]) == {} and json.loads(ps["fit"]) == {}  # C2 fills them
+    assert set(json.loads(ps["competency"])) == set(cat.COMPETENCIES) and set(json.loads(ps["fit"])) == set(cat.PROFESSIONS)  # C2 fills them
     prog = {r_["achievement_id"]: (r_["current"], r_["target"]) for r_ in await c.db.fetch(
         "SELECT * FROM achievement_progress WHERE user_id = $1 AND achievement_id <> '_counters'", uid)}
     assert prog["bottles_1k"] == (1000, 1000) and prog["bottles_10k"] == (1500, 10_000) and prog["sku_all"] == (5, 8)

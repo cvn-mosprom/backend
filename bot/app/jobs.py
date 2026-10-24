@@ -12,6 +12,8 @@ never piles up.
 C1 adds ``achievements_recompute`` every 10 minutes: ``POST /internal/achievements/recompute`` in batches of 200 (the rules that
 need the shifts / quiz / season tables; the per-command rules run inside the api).
 
+C2 adds ``achievement_notify`` every 20 s: the outbox rows ``achievement_unlocked`` become messages to opted-in players (app/player/achievements.py).
+
 Planned entries (sprints S6-S7):
 
 * order reminders (``order_reminders``, 5 min, app/player/reminders.py) and the 5xx alert (``alert_5xx``, 1 min,
@@ -35,6 +37,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .config import Settings
 from .hr.outbox import outbox_delivery
+from .player.achievements import achievement_notify
 from .player.alerts import alert_5xx
 from .player.reminders import order_reminders
 
@@ -174,6 +177,8 @@ JOBS: tuple[JobSpec, ...] = (
     # S6 player side (both do nothing without BOT_TOKEN): order reminders for opted-in players, 5xx alert for the HR admins
     JobSpec("order_reminders", order_reminders, "interval", {"minutes": 5, "jitter": 20}, "order reminders (opted-in players)"),
     JobSpec("alert_5xx", alert_5xx, "interval", {"minutes": 1}, "5xx alert (>20% of 10 min) to HR admins"),
+    # C2: gold / seasonal achievement notifications to opted-in players (outbox kind achievement_unlocked)
+    JobSpec("achievement_notify", achievement_notify, "interval", {"seconds": 20}, "achievement notifications (gold / seasonal)"),
     # C1: full achievement evaluation (shift / quiz / season rules) for the players that changed
     JobSpec("achievements_recompute", achievements_recompute, "interval", {"minutes": 10, "jitter": 30},
             "achievements full recompute (batches)"),

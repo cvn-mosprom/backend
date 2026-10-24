@@ -52,7 +52,7 @@ def test_lead_created_is_delivered_to_every_admin_and_marked_sent():
         assert "Иванова Анна" in body and "stale name" not in body  # rendered from the DB, not the payload
         assert "+79991112233" in body and "Оператор линии розлива" in body and "Новая анкета" in body
         buttons = [b for row_ in markup.inline_keyboard for b in row_]
-        assert len(buttons) == 5 and all(b.callback_data.startswith(f"ls:{lid}:") for b in buttons)
+        assert len(buttons) == 7 and all(b.callback_data.startswith(f"ls:{lid}:") for b in buttons)
         # nothing left: a second run sends nothing
         bot.send_message.reset_mock()
         assert (await outbox.deliver_once(runtime.get())).sent == 0

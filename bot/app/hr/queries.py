@@ -19,7 +19,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .format import INSTITUTION_KINDS, MSK, PROFESSIONS, QUIZ_QUESTION_IDS, STATUS_ALIASES, STATUSES, TAGS, age_years
+from .format import (INSTITUTION_KINDS, LEGACY_STATUSES, MSK, PROFESSIONS, QUIZ_QUESTION_IDS, STATUS_ALIASES, STATUSES, TAGS,
+                     age_years)
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +38,10 @@ FUNNEL_STEPS: tuple[tuple[str, str], ...] = (
 LEAD_COLS = """l.id, l.user_id, l.season_id, l.full_name, l.birth_date, l.phone, l.email, l.telegram, l.university,
     l.institution_kind, l.direction, l.course, l.vacancy, l.ready_from, l.readiness, l.practice_type, l.tags, l.status, l.hr_note,
     l.best_profession, l.season_place, l.quiz_score, l.consent_revoked_at, l.created_at, l.updated_at,
-    u.tg_id, u.username AS tg_username, coalesce(l.source, u.source) AS source"""
+    u.tg_id, u.username AS tg_username, coalesce(l.source, u.source) AS source,
+    CASE WHEN l.user_id IS NULL OR l.consent_revoked_at IS NOT NULL THEN NULL ELSE coalesce((SELECT ps.achievement_points FROM factories f
+        JOIN player_scores ps ON ps.user_id = f.user_id AND ps.season_id = f.season_id WHERE f.user_id = l.user_id), 0) END
+        AS achievement_points"""  # C5: ОД as the CRM list shows them (score row of the player's current season); NULL = no game profile / revoked
 LEAD_FROM = "FROM leads l LEFT JOIN users u ON u.id = l.user_id"
 PAGE_SIZE = 10
 
@@ -105,7 +109,21 @@ def _lead_where(f: LeadFilter, *, revoked_ok: bool) -> tuple[str, dict[str, Any]
 
 async def fetch_lead(s: AsyncSession, lead_id: int) -> dict[str, Any] | None:
     row = (await s.execute(text(f"SELECT {LEAD_COLS} {LEAD_FROM} WHERE l.id = :id"), {"id": lead_id})).mappings().first()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    card = dict(row)
+    if card["user_id"] is not None and card["consent_revoked_at"] is None:
+        card["top_achievements"] = await top_achievements(s, card["user_id"])
+    return card
+
+
+async def top_achievements(s: AsyncSession, user_id: int, limit: int = 3) -> list[dict[str, Any]]:
+    """C5: the best earned achievements of a player by points (a seasonal one earned in several seasons counts once)."""
+    rows = (await s.execute(text(
+        "SELECT achievement_id AS id, tier, max(points) AS points FROM achievements_earned WHERE user_id = :u "
+        "GROUP BY achievement_id, tier ORDER BY max(points) DESC, min(earned_at), achievement_id LIMIT :n"),
+        {"u": user_id, "n": limit})).mappings().all()
+    return [dict(r) for r in rows]
 
 
 async def list_leads(s: AsyncSession, f: LeadFilter, page: int = 0, size: int = PAGE_SIZE) -> tuple[list[dict[str, Any]], int]:
@@ -145,6 +163,7 @@ async def set_lead_status(s: AsyncSession, lead_id: int, status: str, actor: str
 
     Returns (outcome, lead card): ``ok`` | ``unchanged`` | ``revoked`` (refused: consent revoked, nothing written) |
     ``not_found`` | ``bad_status``."""
+    status = LEGACY_STATUSES.get(status, status)
     if status not in STATUSES:
         return "bad_status", None
     now = now or datetime.now(timezone.utc)
@@ -159,7 +178,7 @@ async def set_lead_status(s: AsyncSession, lead_id: int, status: str, actor: str
             outcome = "unchanged"
         else:
             line = f"{now:%Y-%m-%d %H:%M} UTC · {actor}: {cur.status} → {status}"
-            await s.execute(text("UPDATE leads SET status = :st, updated_at = :now, "
+            await s.execute(text("UPDATE leads SET status = :st, updated_at = :now, stage_changed_at = :now, version = version + 1, "
                                  "hr_note = concat_ws(E'\\n', hr_note, CAST(:line AS text)) WHERE id = :id"),
                             {"st": status, "now": now, "line": line, "id": lead_id})
             try:  # history of the candidate (C3); a savepoint, so a failing audit row never rolls the status back

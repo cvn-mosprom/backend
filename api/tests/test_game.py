@@ -135,7 +135,8 @@ async def test_command_success_shape_and_persistence(game, fake_sim, clock):
     resp = await command(game, 0, key(1), place(3, 4))
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"ok", "version", "result", "events", "snapshot", "replayed", "toast"}  # S8: toast also top-level
+    assert set(body) == {"ok", "version", "result", "events", "snapshot", "replayed", "toast",
+                         "achievementsUnlocked"}  # S8: toast also top-level; C2: achievementsUnlocked
     assert body["ok"] is True and body["version"] == 1 and body["replayed"] is False and body["events"] == []
     assert body["result"] == {"toast": "Построено: filler"} and body["toast"] == "Построено: filler"
     assert body["snapshot"]["factory"]["credits"] == START_CREDITS - PLACE_COST

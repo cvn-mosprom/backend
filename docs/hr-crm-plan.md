@@ -280,3 +280,237 @@ check-ограничением (новые виды без миграции); в
 роль; `/leads /lead` и кнопки статусов — `hr`+; `/export` — `hr_lead`+. Если в таблице нет ни одной строки или она недоступна,
 работает `HR_ADMIN_TG_IDS` (каждый id = `admin`); при непустой таблице env игнорируется. Карточки анкет (outbox) уходят в `HR_CHAT_ID`,
 иначе всем активным `hr/hr_lead/admin` (аналитику — нет, в карточке ПДн); алерт 5xx — активным `admin`.
+
+## C5 as built (вакансии, аналитика, экспорт, ОД в боте)
+
+Код: `api/app/hr/vacancies.py`, `analytics.py`, `export.py`; роуты `api/app/routes/hr_vacancies.py`, `hr_reports.py`; миграция `0017`
+(`vacancies`, down `0016`); бот: `bot/app/hr/queries.py` + `format.py`. Тесты: `api/tests/test_c5_vacancies.py`, `test_c5_reports.py`,
+`test_c5_bot_drift.py`, `bot/tests/test_c5_cards.py`. Формы ответов — ровно `vendor/frontend/web/src/lib/hr/types.ts`.
+
+**Вакансии** (`vacancies`: id, profession_id, title, city, active, requirements jsonb, created_by → hr_users, created_at, updated_at).
+
+- `GET /api/hr/vacancies` (любая HR-роль, в том числе аналитик) → `{items: [Vacancy]}` по возрастанию id; `matching` — число кандидатов с
+  `fit >= 70` (`MATCH_MIN`) по этой вакансии.
+- `POST /api/hr/vacancies` (`hr_lead`+) `{professionId, title, city?, active?, requirements?}` → 201. Обязательны `professionId` (одна из 7
+  профессий каталога) и `title` (1–160 знаков после trim). По умолчанию `city = ""`, `active = true`, требования пустые.
+- `PATCH /api/hr/vacancies/{id}` (`hr_lead`+) — любое подмножество полей, хотя бы одно; `requirements` заменяются целиком. Нет такой → 404
+  `vacancy_not_found`. Строка блокируется `FOR UPDATE`, версий нет (в контракте их нет).
+- `requirements = {competencies: {key: 0..100}, achievements: [id]}`: ключи из шести компетенций каталога, значения — целые (строка, дробное и
+  `true` отклоняются), id достижений — из каталога (скрытые тоже), дубликаты схлопываются, не больше 60. Любое нарушение — 422 `validation_error`.
+- Сверх контракта: `GET /api/hr/vacancies/{id}/candidates?limit=1..50` (любая роль) — лучшие кандидаты по fit
+  `[{id (анкета), fullName, achievementPoints, score, reasons[{text, delta}], piiMasked}]`; ПДн аналитика маскируются (`mask_pii_many`).
+- Fit считает `achievements.scores.vacancy_fit(competency, earned_ids, requirements)` (C2); здесь только сбор входа. **Пул кандидатов** — игроки
+  с неотозванной анкетой, без ботов и тестовых; анкеты лендинга (нет игрока) не участвуют. `competency` берётся из строки `player_scores` сезона
+  фабрики игрока (как в списке C4), достижения — все полученные. Вакансия без требований даёт fit 0.
+- Для карточки C4: `vacancies.fits_for_user(session, user_id, only_active=True)` → `[{vacancyId, professionId, title, active, score, reasons}]`.
+
+**Аналитика** `GET /api/hr/analytics?period=7d|30d|all` (любая роль; по умолчанию `30d`, другое значение — 422). Агрегаты без ПДн, поэтому кэш
+Redis `hr:analytics:<period>` на 60 с общий для ролей; недоступный Redis не ломает запрос. Боты, тестовые игроки и отозванные анкеты не считаются.
+Период — окно по времени создания: события по `events.ts`, игроки по `users.created_at`, анкеты (и всё из них: статусы, источники, вузы, ОД,
+компетенции) по `leads.created_at`.
+
+- `funnel`: 10 этапов, `stage` = имя события игры или этап анкеты: `app_open, session_start, game_start, game_end, finale_view,
+  lead_form_open` (уникальные игроки), затем из таблицы анкет `lead` (все анкеты периода, с лендингом), `interview` (статусы interview+offer+hired),
+  `offer` (offer+hired), `hired`. Этапы по текущему статусу, не по истории переходов.
+- `statuses`: все 7 статусов (нули тоже); старое `contacted` считается как `screening`.
+- `sources`: `players` — новые игроки с этим `start_param` (сотрудники из `hr_users` не считаются игроками), `leads` — анкеты, `hired` — из них приняты;
+  без метки — «напрямую»; сортировка по анкетам, максимум 30.
+- `points`: 8 корзин по 100, **последняя открытая** (`from 700, to 799` — в неё попадают все ≥ 700, как в моке фронта); считаются кандидаты с
+  игроком (лендинговые анкеты без игры не попадают в нулевую корзину). `competencyAvg` — среднее по тем же кандидатам, по ключу только там, где он
+  есть в `player_scores.competency`, целое; пусто → 0.
+- `universities`: точное название вуза → `leads`, `interview` (interview+offer+hired), `hired`; максимум 50.
+
+SQL бота (`/funnel /sources /stats`) переписан, а не импортирован: бот и api — разные образы.
+
+**Экспорт** `GET /api/hr/export.csv` (`hr_lead`+; аналитик и `hr` — 403). Состав выгрузки определяют те же `candidates.Filters` и подзапрос C4, что у
+`GET /api/hr/candidates` (`q`, `status*`, `profession`, `university`, `minPoints`, `minFit`, `competency.<key>`, `assignee`), поэтому файл = список
+для той же строки запроса; `sort/cursor/limit` игнорируются, нераспознанное значение фильтра — 422. Формат как у `/export` бота: UTF-8 с BOM, `;`, CRLF,
+защита от формул (`'=…`). Колонки бота плюс `ОД`, шесть `компетенция: …` и `лучший fit: профессия/балл`; заметки HR не выгружаются. ОД пусто у лендинговой
+анкеты, 0 у игрока без очков. `Content-Disposition: attachment; filename="candidates-YYYY-MM-DD.csv"` (дата МСК; заголовок добавлен в CORS expose).
+Отозванные, боты и тестовые не попадают. **Журнал:** по строке `export` в `lead_events` на каждую выгруженную анкету, в одной транзакции с выборкой
+(нет записи — нет файла): `{format: "csv", count, filters}`; в `filters` только имена и безличные значения, свободный `q` — флагом `true`. Пустая выборка
+даёт файл с заголовком и ни одного события (нет `lead_id`).
+
+**Бот.** `/leads`: у анкеты игрока в строке «N ОД» (у лендинговой и отозванной нет); карточка `/lead` (и перерисовка после кнопки статуса): строка
+«🏅 ОД: N · 🥇 «…», 🥈 «…», 🥉 «…»» — три лучших полученных достижения по очкам (сезонное, полученное в нескольких сезонах, — один раз). ОД берутся из
+строки `player_scores` сезона фабрики — то же число, что в CRM. Названия достижений бот держит копией `ACHIEVEMENT_TITLES` (`bot/app/hr/format.py`);
+`api/tests/test_c5_bot_drift.py` падает при расхождении с каталогом. Карточка из outbox (только что созданная анкета) строится из payload и строки
+достижений не имеет.
+
+**Заметки.** Матчинг вакансий читает всех кандидатов на каждый `GET /vacancies` (два запроса плюс `vacancy_fit` в Python); для нагрузочного прогона на
+5 000 кандидатов (C6) при необходимости кэшировать по аналогии с аналитикой.
+
+## C2 as built (компетенции, fit, API игрока, уведомления)
+
+Код: `api/app/achievements/scores.py` (чистые формулы), `player.py` (чтение для игрока), `service.py` (запись и хук), `api/app/routes/achievements.py`,
+бот `bot/app/player/achievements.py` (задача `achievement_notify`, раз в 20 с). Миграция `0015` — только индекс `ix_player_scores_season_sp`
+(`competency`/`fit` создал C1). Тесты: `api/tests/test_c2_scores.py` (30, без БД), `api/tests/test_c2_api.py` (24, Postgres+Redis),
+`bot/tests/test_c2_notify.py` (13).
+
+**Компетенции** (целые 0..100, ключи `speed, accuracy, attention, endurance, reliability, company`; пишутся в `player_scores.competency`):
+
+- `proof_k = 100 · Σ w·credit / Σ w` по записям каталога с `competency = k`; вес `w`: бронза 1, серебро 2, золото 3; `credit` = 1, если получено,
+  иначе `0,5 · min(1, current/target)` (прогресс из `achievement_progress`, он монотонен).
+- скорость / точность / внимательность / выносливость = `0,75 · навык_k · conf + 0,25 · proof_k`; навык — `state.skills[k]` (0..100),
+  `conf = min(1, смен / 10)`, смен = `max(state.shiftsTotal, Σ byProfession.played)`. Без смен и достижений — 0; максимум без достижений — 75.
+- надёжность = `proof_reliability` (выпуск, SKU, заказы в срок, аванс); знание компании = `0,5 · квиз% + 0,5 · proof_company`, квиз% =
+  `100 · верных / 8` (верных — из прогресса `quiz_8`, поэтому лишних запросов нет).
+
+**Fit по профессии** (все 7 `ProfessionId`; `player_scores.fit = {pid: {score, reasons[{text, delta}]}}`) = сумма четырёх частей, максимум
+15 + 25 + 15 + 45 = 100: опыт `15 · min(1, смен/10)`; результат `25 · (0,6 · доля побед + 0,4 · средний балл) · min(1, смен/5)`; достижения
+профессии `15 · (0,4 · credit(practice) + 0,6 · credit(ace))`; компетенции `45 · Σ вес_k · компетенция_k/100` (профиль `scores.PROFILE`, у каждой
+профессии 4 компетенции с весами на 1: лаборант ОТК — внимательность 0,45, точность 0,35, знание компании 0,1, надёжность 0,1; оператор —
+скорость 0,4, точность 0,3, …). Части — вещественные; `score = round(Σ)`, а целые `delta` причин получаются методом наибольшего остатка к
+этому итогу, поэтому **причины всегда дают ровно score**, `delta ≥ 0`, причины с нулём не показываем (если score 0 — одна причина «Пока нет
+подтверждённых данных…» с `delta 0`). Тексты уникальны (фронт ключует по ним). Нулевые данные дают 0, идеальные — ровно 100.
+
+**Для C5:** `scores.vacancy_fit(competency, earned_ids, requirements) -> {score, reasons}`, `requirements = {competencies: {key: min},
+achievements: [id]}`. Каждое требование — равная доля 100: компетенция даёт долю `min(1, значение/min)` (min ≤ 0 — всегда выполнено),
+достижение — всё или ничего. Причины перечисляют все требования (невыполненное остаётся с `delta 0` и словами «ниже требуемого» /
+«не получено»), сумма причин = score. Нет требований → score 0. Для списка кандидатов: `scores.best_fit(fit)` → `(profession, score)` или
+`None`; `scores.score_player(state, by_profession, earned, progress)` — то, что пишет сервис.
+
+**Когда пишутся компетенции и fit.** Каждая полная оценка (пересчёт ботом, backfill) и после принятой смены — всегда; в дешёвом хуке команды —
+только если команда что-то разблокировала (иначе ничего не меняется, лишней записи нет). В хуке с разблокировкой профессиональная статистика
+берётся из `state` + одного группового запроса по `shifts`, чтобы значения не «мигали» между хуком и пересчётом. Ошибка внутри — откат только
+SAVEPOINT хука, команда проходит.
+
+**API игрока** (fit не отдаётся ни в одной ручке игрока, проверено тестом по ключам во всех ответах):
+
+- `GET /api/achievements/me` → `{catalogVersion, seasonId, achievementPoints, seasonPoints, earnedCount, total, competency{6}, items[], earned[]}`.
+  `items` — весь каталог в порядке каталога: поля `AchievementCatalogEntry` фронта (`id,title,description,category,tier,points,competency,hidden,
+  seasonal,target,profession`) + `earned, earnedAt (мс|null), times, progress {current,target}|null` (для сезонных — полоса текущего сезона;
+  у мест в сезоне полосы нет). Скрытое и не полученное: `title "???"`, `description` — заглушка, `competency/target/profession/progress = null`.
+  `earned` — полученные, новые сверху: `{id,title,tier,points,earnedAt,seasonId,seasonal}`.
+- `GET /api/achievements/catalog` → `{version, items:[{id,title,tier,points,category,competency,hidden}]}` для любого вошедшего; название скрытого
+  видит только активный HR-пользователь, остальным «???».
+- `POST /api/command` → в теле верхнего уровня `achievementsUnlocked: [{id,title,description,category,tier,points,hidden,seasonal}]` (пустой
+  список, если ничего нового). Список лежит в записи идемпотентности (`state.meta.idempotency[].ach`, пишется в той же транзакции), поэтому
+  повтор (из Redis и из БД) отдаёт тот же список. Хук теперь идёт ДО записи состояния, остальное без изменений; `HttpGameApi` читает только
+  `toast/rewards/replayed`, лишнее поле не мешает.
+- Топ: вкладка `achievements` в `GET /api/season/leaderboard`: по `player_scores.achievement_points` сезона борда; `scope=season` — по
+  `season_points` (по умолчанию `all`; другое значение — 422 `invalid_scope`). В таблице только игроки с очками > 0, поэтому демо-боты
+  (достижений не получают) и игрок без очков не попадают, а `me` у него нет. Кэш Redis с учётом `scope`.
+- `GET /api/season/summary` и `GET /api/factory/{id}`: `achievementPoints` (за всё время) и `topAchievements` — до 3 лучших полученных
+  `[{id,title,tier,points}]` (по очкам, затем по уровню, затем по свежести); в summary ещё `seasonPoints`. Поля на верхнем уровне ответа.
+
+**Outbox и история.** В той же транзакции, что и выдача (`service._announce`, внутри SAVEPOINT хука — откат забирает всё вместе):
+
+- `lead_events` вид `achievement`, `payload {id,title,points,tier}`, `actor_hr_id NULL`, на каждый активный лид игрока (отозвавшие согласие не
+  получают); `achievement` добавлен в `hr.access.EVENT_KINDS`.
+- `outbox` вид `achievement_unlocked`, `payload {user_id, achievement_id, title, tier, points, seasonal, season_id, via}`. Backfill (`via =
+  backfill`) outbox не пишет, чтобы разовый прогон не рассылал всем старые достижения; в историю кандидата он событие всё равно пишет.
+
+**Уведомления бота** (`achievement_notify`, раз в 20 с, по 100 строк за запуск): отправляются только золотые или сезонные, только игрокам с
+`bot_started_at` и `notify_opt_in`, никогда ботам и тестовым (`is_bot`/`is_test`), не ночью (23:00–09:00 МСК строки ждут), строки старше 48 ч
+отбрасываются. Каждая строка получает `sent_at`: доставлена или пропущена с причиной в `last_error` («not delivered: …»). Ошибка отправки —
+`attempts += 1` и backoff в памяти, не более 20 попыток; заблокировавший бота игрок отписывается (`notify_opt_in = false`), как у напоминаний.
+Задачи HR-outbox (`lead_created`, `lead_revoked`) строки `achievement_unlocked` не трогают.
+
+**Для C4/F:** история кандидата уже содержит `achievement`-события (с момента выката; прошлые достижения лежат в `achievements_earned`).
+Движок отдаёт `by_profession` в результате `evaluate` (вход fit). Формулы можно перенастраивать правкой `scores.py` без миграции: значения
+обновятся при следующей оценке игрока (или `python -m app.achievements.backfill`).
+
+## C4 as built (кандидаты и воронка)
+
+Код: `api/app/hr/candidates.py` (запросы и сборка ответов), `api/app/routes/hr_candidates.py` (роуты и валидация), миграция `0016` (down
+`0015`), модели `Lead` (+3 колонки) и `LeadNote`; бот: `bot/app/hr/{format,queries,handlers,outbox}.py`. Тесты:
+`api/tests/test_c4_candidates.py` (34 теста, Postgres+Redis), `bot/tests/test_c4_candidates.py` (12); старые тесты бота переведены на новые статусы.
+Формы ответов — ровно `vendor/frontend/web/src/lib/hr/types.ts` (`CandidateRow`, `CandidateDetail`, `LeadNote`, `Pipeline`).
+
+**Кандидат** — неотозванная анкета (`leads.consent_revoked_at IS NULL`), владелец которой (если есть) не демо-бот и не тестовый игрок.
+Анкеты лендинга (`user_id IS NULL`, игры нет) — полноправные кандидаты: игровой профиль пустой (`game` из нулей, `level 0`, `competency` нули,
+`fit []`, `seasonRank null`), `canMessage false`, `source` — метка лендинга. Остальные ходят как обычные (статус, назначенный, теги, заметки).
+Скрытая анкета (отозвана / бот / тест) везде отвечает 404 `lead_not_found`, в том числе на запись, и событий не пишет.
+
+**Миграция `0016`.** Статусы `new → screening → interview → offer → hired | rejected | reserve` (check-ограничение заменено, `contacted` →
+`screening`); `leads.assignee_id` (FK `hr_users`, SET NULL), `leads.stage_changed_at` (бэкфилл: `created_at` для `new`, иначе `updated_at`),
+`leads.version` (1); таблица `lead_notes` (текст заметок лежит здесь, а не в `lead_events`, который читает аналитик); индексы
+`ix_leads_created_id`, `ix_leads_status_stage` (колонки канбана), `ix_leads_assignee`, `ix_leads_user_id`, `ix_lead_notes_lead_created`.
+Откат: `screening → contacted`, `offer → interview`, `reserve → new`. Проверено тестом на отдельной БД (данные, ограничение, откат).
+
+**`GET /api/hr/candidates`** (любая HR-роль) → `{items: [CandidateRow], nextCursor, total}`. Параметры как шлёт `HttpHrApi`: `q`, `status` (повтор),
+`profession`, `university`, `minPoints`, `minFit`, `competency.<key>=min` (можно несколько, AND), `assignee=me|none`, `sort=fresh|points|fit|rank`
+(по умолчанию `fresh`), `cursor`, `limit` (1..200, по умолчанию 50). Всё одним запросом: `leads` + игрок + фабрика + `player_scores` сезона
+фабрики + назначенный + лучший fit (`LATERAL` по `player_scores.fit`) + живое место в сезоне; фильтры, сортировка и курсор работают по этим же
+вычисляемым колонкам. Неизвестное значение (`status`, `profession`, ключ компетенции, `assignee`, `sort`, курсор, `limit` вне диапазона) — 422
+`validation_error`; `contacted` принимается как `screening`.
+
+- `total` — число подходящих без курсора и лимита. `nextCursor` — непрозрачная строка (base64url от `[sort, значение, id]`), живёт в рамках того же
+  `sort` (чужой — 422). Keyset: `fresh` — `created_at DESC, id DESC`; `points` — ОД; `fit` — балл лучшего fit (нет fit = 0); `rank` — место по
+  возрастанию, без места в конце, при равенстве по `id` по возрастанию; у остальных при равенстве `id DESC`. Страницы без пропусков и повторов
+  (тест обходит все сортировки с лимитами 1 / 3 / все и 128 строк).
+- `profession`: `vacancy` анкеты ИЛИ профессия лучшего fit (как в моке). `university` — точное совпадение. `minPoints`/`minFit` — `>=`.
+  `competency.<key>` — `>=`, отсутствие значения = 0. `assignee=me` — `hr_users.id` вызывающего.
+- `q` — подстрока без регистра: вуз, точный id; для ролей с ПДн ещё ФИО, телефон, email, telegram. **Аналитик ищет только по вузу и id**
+  (иначе поиск стал бы оракулом, снимающим маску). `%` и `_` в запросе — обычные символы.
+- Строка: `roleId` = `vacancy` анкеты → профессия лучшего fit → `best_profession` → `operator` (поле обязательно в клиенте, а у части лендинговых
+  анкет вакансии нет). `source` = метка лендинга или `users.source`. `seasonRank` — живое место: 1 + игроки сезона фабрики впереди (звёзды, при
+  равенстве меньший id; боты в рейтинге, если включены `bots_enabled`, тестовые нет — как `leaderboard.rank_of`), иначе `leads.season_place` из
+  момента отправки анкеты. `achievementPoints`, `competency` (все 6 ключей, целые 0..100), `fitBest` — из `player_scores` (пусто → 0 / нули /
+  `null`). `assignee.name` — как имя в `/api/hr/users` (строка игрока), без неё `HR #<id>`. Для аналитика `fullName` → «Кандидат #id», `piiMasked`.
+  Живое место считается оконной функцией по всем фабрикам один раз на запрос; для одной карточки — подсчётом «кто впереди».
+
+**`GET /api/hr/candidates/{id}`** (любая роль) → `CandidateDetail` = строка + анкета (`phone`, `email`, `telegram` с `@`, `birthDate`, `readyFrom`,
+`practiceType`) + `game` + `achievements[]` + `fit[]` + `history[]` + `notes[]` + `canMessage`.
+
+- `game`: `level`, `stars`, `quality` (процент, целое), `shiftsTotal`, `quizScore` (верные ответы по текущему банку, иначе значение из анкеты),
+  `byProfession[]` — профессии с хотя бы одной сменой, из снимка фабрики (`skills.byProfession`; `avgScore` до сотых).
+- `achievements[]`: весь каталог в порядке каталога (скрытые отдаются полностью, это HR): запись `AchievementCatalogEntry` + `earnedAt` (мс | `null`),
+  `progress {current, target}` (только не полученные с полосой, `target > 1`, из `achievement_progress`) и `evidence` — строка по JSON-доказательству
+  движка («выпущено бутылок: 1500», «качество: 98,7 %», «верных ответов: 7 из 8»…); сезонные — по последней выдаче.
+- `fit[]`: из `player_scores.fit` по убыванию балла: `{profession, title, score, reasons[{text, delta}]}`; названия профессий — как в клиенте.
+  Сверх контракта `vacancyFit[]` — fit к открытым вакансиям (`vacancies.fits_for_user`, C5).
+- `history[]`: новые сверху, до 200 событий `lead_events` `{id, kind, at (мс), actor, payload}`; `actor` — имя HR (как в `/api/hr/users`), `система`
+  (без автора), `игра` (вид `achievement`). Последней строкой — синтетическое «создана»: `{id: -lead_id, kind: "status", payload: {to: "new"}}`.
+- `notes[]`: `{id, author, text, at}`, новые сверху, до 200; **аналитику всегда `[]`**.
+- Просмотр пишет событие `view` `{masked: bool}` в той же транзакции (журнал доступа 152-ФЗ) и входит в `history`. Аналитик получает ПДн
+  замаскированными (`mask_pii`): ни ФИО, ни контактов, ни даты рождения, ни текста заметок.
+
+**`PATCH /api/hr/candidates/{id}`** (`hr`+) `{status?, assigneeId?, tags?, version}` → `CandidateRow`. Нужно хотя бы одно поле; `status`/`tags` не
+`null`, `assigneeId: null` снимает назначенного. Анкета блокируется `FOR UPDATE`; `version` не совпал → 409 `version_conflict`
+(`details.version` — актуальная), ничего не записано. Два HR с одной версией: выигрывает один (тест на трёх параллельных PATCH). Любой переход между
+статусами разрешён (канбан). Версия растёт ровно на 1 за запрос, меняющий хоть что-то; повтор текущих значений — no-op без события и без роста
+версии (но версия всё равно проверяется). События, в одной транзакции с изменением: `status` `{from, to, via: "web"}` (+ `stage_changed_at`),
+`assign` `{from, to (имя | «никто»), fromId, toId}`, `tag` `{tags, added, removed}`. Назначенный — только активный HR не-аналитик (иначе 422).
+Теги: строка 1..40 знаков, до 20, trim, без дублей, порядок сохраняется; список заменяется целиком (в нём же служебные теги `senior` и т. п.).
+Кнопки статуса в боте тоже увеличивают `version` и двигают `stage_changed_at`, поэтому веб видит конфликт с ботом.
+
+**`POST /api/hr/candidates/{id}/notes`** (`hr`+) `{text}` (1..4000 после trim) → 201 `{id, author, text, at}`; событие `note` `{noteId}` — без текста.
+Версию не трогает.
+
+**`POST /api/hr/candidates/{id}/messages`** (`hr`+) `{template: interview|offer|reject|custom, text?}` → 202 `{ok, id}` (id строки outbox). `text`
+до 3500; для `custom` обязателен, для шаблонов пустой = «текст по умолчанию». Нет игрока, нет Telegram (лендинг) или `users.bot_started_at IS NULL`
+→ 409 `bot_not_started` (ничего не пишется). Иначе в outbox строка `hr_message` `{lead_id, user_id, tg_id, template, text, first_name, vacancy,
+hr_user_id}` и событие `message` `{template, outboxId}` (текст в историю не попадает). Статус и версия не меняются.
+
+**Доставка в боте** (`bot/app/hr/outbox.py`, `deliver_messages`, зовётся из той же задачи `outbox_delivery` раз в 7 с и не зависит от HR-чатов):
+строка берётся `FOR UPDATE SKIP LOCKED`, уходит в личный чат кандидата **простым текстом** (`parse_mode=None`: HTML в тексте HR не разбирается).
+Текст по умолчанию: «Здравствуйте, {имя}! Приглашаем вас на интервью в «Очаково» на позицию «{профессия}». Напишите, когда вам удобно, и мы согласуем время.»
+(оффер: «Рады сообщить: мы готовы предложить вам место…», отказ: «Спасибо за интерес к «Очаково». Сейчас мы не готовы предложить вам место, но сохраним вашу
+анкету в резерве.»; без имени / профессии фразы укорачиваются). Строка закрывается `sent_at` с причиной в `last_error` и без отправки, если: анкету
+отозвали после постановки (`consent revoked`), кандидат не запускал бота, тестовый / демо-игрок, игрока нет, нет текста; кандидат заблокировал бота
+(`blocked the bot`) — повтора нет. Сбой сети / Telegram: `attempts + 1`, экспоненциальная пауза (в памяти) до 20 попыток. Ответов кандидата бот не разбирает.
+
+**`GET /api/hr/pipeline?profession&assignee`** (любая роль) → `{columns: [{status, count, items}]}`: всегда 7 колонок в порядке воронки, `count` — все,
+`items` — до 50 последних перемещённых (`stage_changed_at DESC, id DESC`), строки того же вида, что в списке (маска для аналитика); фильтры как в списке.
+
+**Бот.** Кнопки карточки: `new · screening · interview` / `offer · hired` / `rejected · reserve`; старые кнопки `ls:<id>:contacted` в уже отправленных
+карточках работают как `screening`; `/leads`, `/export` принимают `contacted` как синоним и русские слова («скрининг», «оффер», «резерв»…);
+`/stats` показывает все 7 статусов.
+
+**Права.** Чтение (список, карточка, воронка) — любая активная роль, аналитик с маской и без заметок; запись (PATCH, заметки, сообщения) — `hr`+, иначе 403
+`forbidden`; без входа 401. Все ответы `Cache-Control: no-store` (общий middleware C3), лимит `hr` 120/мин.
+
+**Замер** (5 000 кандидатов с фабриками и очками, Postgres в Docker на Windows, страница из 50): список любой сортировки ≈ 33 мс (вторая страница
+по курсору 35 мс, с фильтрами 25 мс, поиск 21 мс), воронка 7×50 ≈ 46 мс, карточка ≈ 19 мс.
+
+**Живая проверка.** Стек пересобран (`api` без зависимостей) и промигрирован (`0016`, затем `0017` C5). `HttpHrApi` из `vendor/frontend` прогнан против него
+(`pnpm vitest run src/lib/hr/hr.live.test.ts src/lib/hr/hr.c4.live.test.ts`, `DEV_AUTH=1`, Caddy `https://localhost`): C3 — 6 тестов, C4 — 8 тестов
+(новый файл `hr.c4.live.test.ts`: свой кандидат через публичную анкету лендинга; список с сортировками и фильтрами, курсор, карточка, PATCH и 409,
+заметки, `bot_not_started`, воронка, аналитик без ПДн и без записи, роль `hr`, отзыв согласия); пройдены.
+
+**Заметки.** (1) Список считает живое место окном по всем фабрикам и `LATERAL` по `fit` для каждой строки — на тысячах кандидатов это десятки
+миллисекунд; если для C6 понадобится больше, денормализовать лучший fit и место в `player_scores`. (2) `evidence` — общий
+форматтер по ключам движка; новое правило с новым ключом сначала покажется как `ключ: значение`. (3) `GET` карточки пишет в БД (`view`), поэтому
+в части нагрузки это запись. (4) Один игрок с анкетами в двух сезонах — два кандидата (по строке на анкету).

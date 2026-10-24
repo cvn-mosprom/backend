@@ -19,7 +19,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from . import access, queries, runtime
-from .format import (LEAD_PREFIX, MSK, QUIZ_TOTAL, STATUSES, card_keyboard, render_card, render_funnel,
+from .format import (LEAD_PREFIX, LEGACY_STATUSES, MSK, QUIZ_TOTAL, STATUSES, card_keyboard, render_card, render_funnel,
                      render_leads_page, render_sources, render_stats, render_top, status_label)
 
 log = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ NO_DB = "База данных недоступна, попробуйте поз
 # (minimum role, line): /hr shows only what the caller's role may use
 HELP_LINES = (
     ("analyst", "<b>HR-бот</b>"),
-    ("hr", "/leads [статус] [вуз] [#тег] [all] — анкеты, новые сверху (статусы: new contacted interview rejected hired; "
+    ("hr", "/leads [статус] [вуз] [#тег] [all] — анкеты, новые сверху (статусы: new screening interview offer hired rejected reserve; "
            "all — с отозванными)"),
     ("hr", "/lead &lt;id&gt; — карточка анкеты"),
     ("hr_lead", "/export [статус] [вуз] [#тег] — CSV (UTF-8 с BOM, разделитель «;»)"),
@@ -207,6 +207,7 @@ async def on_status_button(cb: CallbackQuery) -> None:
     except ValueError:
         await cb.answer("Некорректная кнопка.", show_alert=True)
         return
+    status = LEGACY_STATUSES.get(status, status)  # buttons of cards sent before C4
     if status not in STATUSES:
         await cb.answer("Неизвестный статус.", show_alert=True)
         return

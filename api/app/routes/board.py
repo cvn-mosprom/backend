@@ -5,7 +5,7 @@ Included AFTER routes/game.py so that the literal /api/factory/me wins over /api
 """
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -29,14 +29,15 @@ Board = Annotated[LeaderboardService, Depends(get_board)]
 @router.get("/season/leaderboard", dependencies=[Depends(rate_limit("leaderboard"))])
 async def leaderboard(
     user: CurrentUser, board: Board,
-    tab: str = "general",  # general | quality | speed | uni, anything else -> 422 invalid_tab
+    tab: str = "general",  # general | quality | speed | uni | achievements, anything else -> 422 invalid_tab
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
     university: Annotated[str | None, Query(max_length=200, pattern=NO_CONTROL)] = None,
     university_id: Annotated[str | None, Query(max_length=200, pattern=NO_CONTROL)] = None,  # alias of `university` (the university name)
     season_id: Annotated[int | None, Query(ge=1, le=2**31 - 1)] = None,
+    scope: Literal["all", "season"] = "all",  # tab=achievements only: lifetime points | points earned in the season
 ) -> dict[str, Any]:
     """Top-`limit` (cached in Redis 15-30 s) + the caller's `me` block (place, value, gapTo51, inviteCutoff)."""
-    return await board.leaderboard(user, tab, limit, university or university_id or None, season_id)
+    return await board.leaderboard(user, tab, limit, university or university_id or None, season_id, scope)
 
 
 @router.get("/season/summary", dependencies=[Depends(rate_limit("default"))])
@@ -47,5 +48,6 @@ async def season_summary(user: CurrentUser, board: Board) -> dict[str, Any]:
 
 @router.get("/factory/{player_id}", dependencies=[Depends(rate_limit("default"))])
 async def visit(player_id: str, user: CurrentUser, board: Board) -> dict[str, Any]:
-    """Public view of somebody's factory: player (id, name, university) + factory (name, level, stars, layout, updatedAt)."""
+    """Public view of somebody's factory: player (id, name, university) + factory (name, level, stars, layout, updatedAt)
+    + achievementPoints and topAchievements (C2)."""
     return await board.visit(player_id)

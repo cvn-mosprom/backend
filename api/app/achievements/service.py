@@ -14,6 +14,10 @@ Rules of the write side
   * nothing is ever deleted or lowered: progress is upserted with GREATEST, points are re-summed from the earned rows;
   * the engine's counters (orders seen, loans repaid) live in achievement_progress `_counters`.meta; the progress rows of a
     player are read FOR UPDATE, so the hook (holding the factory lock) and the recompute never lose each other's counter updates.
+
+C2 on top (same transaction as the grant): lead_events `achievement` + outbox `achievement_unlocked` for every row really created
+(`_announce`; a backfill writes no outbox), and player_scores.competency / fit (`scores.py`) on every full evaluation, after a shift
+and when the cheap hook unlocked something (`_score_players`).
 """
 from __future__ import annotations
 
@@ -31,9 +35,10 @@ from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .. import quiz_bank
-from ..models import AchievementEarned, AchievementProgress, Factory, User
+from ..models import AchievementEarned, AchievementProgress, Factory, LeadEvent, Outbox, User
 from . import catalog as cat
-from .engine import evaluate
+from . import scores as scoring
+from .engine import evaluate, professions
 
 log = logging.getLogger("mosprom.achievements")
 
@@ -218,26 +223,97 @@ async def write_results(session: AsyncSession, items: list[Item], results: dict[
             index_elements=_EARNED_KEY, set_={
                 "current": sa.func.greatest(t.c.current, ins.excluded.current), "target": ins.excluded.target,
                 "meta": ins.excluded.meta, "updated_at": sa.func.now()}))
-    touched = sorted(season_of) if evaluated_at is not None else sorted(unlocked)
+    if created:
+        await _announce(session, [r for r in new_rows if (r["user_id"], r["achievement_id"], r["season_key"]) in created], via)
+    full = evaluated_at is not None
+    scored = await _score_players(session, items, results, prev, set(unlocked), full)
+    touched = sorted(season_of) if full else sorted(set(unlocked) | set(scored))
     if touched:
-        await _upsert_scores(session, [(uid, season_of[uid]) for uid in touched], evaluated_at)
+        await _upsert_scores(session, [(uid, season_of[uid]) for uid in touched], evaluated_at, scored)
     return unlocked
 
 
-async def _upsert_scores(session: AsyncSession, pairs: list[tuple[int, int]], evaluated_at: datetime | None) -> None:
+async def _announce(session: AsyncSession, rows: list[dict[str, Any]], via: str) -> None:
+    """Tell the world about achievements this transaction really created (same transaction, so a rollback takes them back):
+      * lead_events `achievement` {id, title, points, tier} on every active lead of the player (the candidate history in the CRM);
+      * outbox `achievement_unlocked` for the bot's player notifications (the bot filters: gold / seasonal, opted in). A backfill
+        creates no outbox rows: a one-off run must not message everybody about old achievements."""
+    rows = sorted(rows, key=lambda r: (r["user_id"], cat.CATALOG.index(cat.BY_ID[r["achievement_id"]]), r["season_key"]))
+    uids = sorted({r["user_id"] for r in rows})
+    leads: dict[int, list[int]] = {}
+    for r in await session.execute(text(
+            "SELECT id, user_id FROM leads WHERE user_id = ANY(:ids) AND consent_revoked_at IS NULL ORDER BY id").bindparams(
+            sa.bindparam("ids", uids, type_=ARRAY(BigInteger)))):
+        leads.setdefault(r.user_id, []).append(r.id)
+    events: list[dict[str, Any]] = []
+    outbox: list[dict[str, Any]] = []
+    for r in rows:
+        a = cat.BY_ID[r["achievement_id"]]
+        for lead_id in leads.get(r["user_id"], []):
+            events.append({"lead_id": lead_id, "kind": "achievement",
+                           "payload": {"id": a.id, "title": a.title, "points": a.points, "tier": a.tier}})
+        if via != VIA_BACKFILL:
+            outbox.append({"kind": "achievement_unlocked", "payload": {
+                "user_id": r["user_id"], "achievement_id": a.id, "title": a.title, "tier": a.tier, "points": a.points,
+                "seasonal": a.seasonal, "season_id": r["earned_season_id"], "via": via}})
+    for chunk in _chunks(events, 2000):
+        await session.execute(pg_insert(LeadEvent).values(chunk))
+    for chunk in _chunks(outbox, 2000):
+        await session.execute(pg_insert(Outbox).values(chunk))
+
+
+async def _score_players(session: AsyncSession, items: list[Item], results: dict[int, dict[str, Any]], prev: Prev,
+                         unlocked: set[int], full: bool) -> dict[int, tuple[dict[str, int], dict[str, Any]]]:
+    """(competency, fit) per player to store. Always on a full evaluation and after a shift (the skills moved); in the cheap
+    hook only for players that just unlocked something (the proof of their competencies changed). Inputs: the state's skills, the
+    per-profession shift stats (merged with the `shifts` table), every earned id and the best known progress of the others."""
+    by_uid = {i.user_id: i for i in items}
+    want = [u for u in results if u in by_uid and (full or u in unlocked or by_uid[u].aggregates.get("shifts") is not None)]
+    if not want:
+        return {}
+    earned: dict[int, set[str]] = {u: set() for u in want}
+    progress: dict[int, dict[str, float]] = {u: {} for u in want}
+    for uid, aid, _ in prev.earned:
+        if uid in earned:
+            earned[uid].add(aid)
+    for (uid, aid, _), (cur, _t) in prev.progress.items():
+        if uid in progress:
+            progress[uid][aid] = max(progress[uid].get(aid, 0.0), cur)
+    extra = [u for u in want if by_uid[u].aggregates.get("shifts") is None]  # cheap hook + unlock: one grouped query
+    table = (await gather_aggregates(session, extra, season=False, quiz=False, team=False)) if extra else {}
+    out: dict[int, tuple[dict[str, int], dict[str, Any]]] = {}
+    for uid in want:
+        res = results[uid]
+        earned[uid].update(e["id"] for e in res["earned"])
+        for p in res["progress"]:
+            progress[uid][p["id"]] = max(progress[uid].get(p["id"], 0.0), p["current"])
+        by_prof = res["by_profession"] if uid not in table else professions(by_uid[uid].state, table[uid]["shifts"]["by_profession"])
+        out[uid] = scoring.score_player(by_uid[uid].state, by_prof, earned[uid], progress[uid])
+    return out
+
+
+async def _upsert_scores(session: AsyncSession, pairs: list[tuple[int, int]], evaluated_at: datetime | None,
+                         scored: dict[int, tuple[dict[str, int], dict[str, Any]]]) -> None:
     """player_scores rows: lifetime points and the part earned in the row's season, re-summed from the earned rows (so the
-    figure is always consistent with them, however often this runs)."""
+    figure is always consistent with them, however often this runs); competency / fit as just scored (a player not scored in
+    this call keeps what the row has)."""
+    comp = [json.dumps(scored[u][0]) if u in scored else None for u, _ in pairs]
+    fit = [json.dumps(scored[u][1], ensure_ascii=False) if u in scored else None for u, _ in pairs]
     await session.execute(text(
-        "INSERT INTO player_scores (user_id, season_id, achievement_points, season_points, evaluated_at, updated_at) "
+        "INSERT INTO player_scores (user_id, season_id, achievement_points, season_points, competency, fit, evaluated_at, updated_at) "
         "SELECT t.uid, t.sid, "
         "COALESCE((SELECT sum(e.points) FROM achievements_earned e WHERE e.user_id = t.uid), 0), "
         "COALESCE((SELECT sum(e.points) FROM achievements_earned e WHERE e.user_id = t.uid AND e.earned_season_id = t.sid), 0), "
-        ":ev, now() FROM unnest(:uids, :sids) AS t(uid, sid) "
+        "COALESCE(CAST(t.comp AS jsonb), '{}'::jsonb), COALESCE(CAST(t.fit AS jsonb), '{}'::jsonb), :ev, now() "
+        "FROM unnest(:uids, :sids, :comp, :fit) AS t(uid, sid, comp, fit) "
         "ON CONFLICT (user_id, season_id) DO UPDATE SET achievement_points = EXCLUDED.achievement_points, "
         "season_points = EXCLUDED.season_points, updated_at = now(), "
+        "competency = CASE WHEN EXCLUDED.competency = '{}'::jsonb THEN player_scores.competency ELSE EXCLUDED.competency END, "
+        "fit = CASE WHEN EXCLUDED.fit = '{}'::jsonb THEN player_scores.fit ELSE EXCLUDED.fit END, "
         "evaluated_at = COALESCE(EXCLUDED.evaluated_at, player_scores.evaluated_at)").bindparams(
         sa.bindparam("uids", [p[0] for p in pairs], type_=ARRAY(BigInteger)),
         sa.bindparam("sids", [p[1] for p in pairs], type_=ARRAY(Integer)),
+        sa.bindparam("comp", comp, type_=ARRAY(sa.Text)), sa.bindparam("fit", fit, type_=ARRAY(sa.Text)),
         sa.bindparam("ev", evaluated_at, type_=sa.DateTime(timezone=True))))
 
 

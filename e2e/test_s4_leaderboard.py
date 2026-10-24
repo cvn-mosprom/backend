@@ -93,7 +93,7 @@ def test_limit_university_filter_and_cache(api: Api):
 def test_errors(api: Api):
     api.bootstrap()
     e = err(api.request("GET", "/api/season/leaderboard", params={"tab": "nope"}))
-    assert e["code"] == "invalid_tab" and set(e["details"]["allowed"]) == set(TABS)
+    assert e["code"] == "invalid_tab" and set(e["details"]["allowed"]) == set(TABS) | {"achievements"}
     assert api.request("GET", "/api/season/leaderboard", params={"tab": "nope"}).status_code == 422
     assert api.request("GET", "/api/season/leaderboard", params={"limit": 0}).status_code == 422
     assert api.request("GET", "/api/season/leaderboard", params={"limit": 101}).status_code == 422
@@ -112,7 +112,7 @@ def test_visit_a_bot_shows_the_public_cut(api: Api):
     r = api.request("GET", f"/api/factory/{bot['playerId']}")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"player", "factory"}
+    assert set(body) == {"player", "factory", "achievementPoints", "topAchievements"}  # C2 adds ОД
     assert body["player"]["id"] == bot["playerId"] and body["player"]["name"] == bot["name"]
     assert body["player"].get("university") == bot.get("university")
     f = body["factory"]

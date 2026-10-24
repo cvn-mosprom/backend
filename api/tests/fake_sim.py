@@ -173,6 +173,9 @@ class FakeSim:
                 blds.append(station := {"id": cmd["buildingId"]})
             station["boost"] = {"mult": round(1 + 0.3 * r["score"] * (1 if r["result"] == "win" else 0.5), 2)}
             return self._out(state, b["now"], {"ok": True, "toast": "Буст", "rewards": {"xp": 10}})
+        if t == "ageConfirm":  # lands in snapshot.player.ageConfirmed like the real sim
+            state["player"]["ageConfirmed"] = True
+            return self._out(state, b["now"], {"ok": True})
         if t == "setUniversity":  # lands in snapshot.player.university like the real sim
             state["player"]["university"] = cmd["university"]
             return self._out(state, b["now"], {"ok": True})

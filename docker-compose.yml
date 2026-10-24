@@ -229,6 +229,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       API_INTERNAL_URL: http://api:8000 # in-network only: caddy does not proxy /internal/*
       INTERNAL_TOKEN: *internal-token
+      HR_ADMIN_TG_IDS: ${HR_ADMIN_TG_IDS:-} # S6: Telegram ids allowed to use the HR commands / receive lead cards
+      HR_CHAT_ID: ${HR_CHAT_ID:-} # S6: optional chat for lead cards (default: every admin)
+      BOTS_ENABLED: ${BOTS_ENABLED:-1} # same flag as the api: demo bots in /top
     mem_limit: 384m
     depends_on:
       db:

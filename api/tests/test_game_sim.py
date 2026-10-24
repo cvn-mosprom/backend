@@ -262,3 +262,14 @@ async def test_server_season_alignment_against_the_real_mock(real):
     row = await factory_row(real)
     assert row["season_id"] == sid and row["state"]["season"]["id"] == sid and row["version"] == 1
     assert (await bootstrap(real))["snapshot"]["season"]["id"] == sid  # stable
+
+
+async def test_age_confirm_reaches_the_user_row_with_the_real_sim(real):
+    boot = await bootstrap(real, 7, "Age")
+    assert not boot["snapshot"]["player"].get("ageConfirmed")
+    assert (await real.db.fetchval("SELECT age_confirmed FROM users WHERE tg_id = 7")) is False
+    res = await command(real, boot["version"], key(1), {"type": "ageConfirm"}, tg=7)
+    assert res.status_code == 200, res.text
+    assert res.json()["snapshot"]["player"]["ageConfirmed"] is True
+    row = await real.db.fetchrow("SELECT age_confirmed, age_confirmed_at FROM users WHERE tg_id = 7")
+    assert row["age_confirmed"] is True and row["age_confirmed_at"] is not None

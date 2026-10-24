@@ -15,16 +15,17 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from aiogram import F, Router
 from aiogram.filters import CommandObject, CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+from aiogram.types import InlineKeyboardMarkup, Message
 
 from ..config import Settings
+from ..player import runtime, store
+from ..player.keyboards import PLAY_BUTTON_TEXT, build_start_keyboard, is_webapp_url_ok, play_button
 
 log = logging.getLogger(__name__)
 router = Router(name="start")
 
 # Telegram allows A-Z a-z 0-9 _ - and up to 64 chars in start parameters.
 START_PARAM_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-PLAY_BUTTON_TEXT = "▶ Играть"
 
 
 def normalize_start_param(raw: str | None) -> str | None:
@@ -45,15 +46,8 @@ def build_webapp_url(base: str, start_param: str | None) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
-def is_webapp_url_ok(url: str) -> bool:
-    """Telegram only accepts https:// URLs for WebApp buttons."""
-    return url.startswith("https://") and len(url) > len("https://")
-
-
 def build_play_keyboard(url: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=PLAY_BUTTON_TEXT, web_app=WebAppInfo(url=url))]]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[[play_button(url)]])
 
 
 def start_text(first_name: str | None, *, with_button: bool = True) -> str:
@@ -68,9 +62,31 @@ def start_text(first_name: str | None, *, with_button: bool = True) -> str:
 async def on_start(message: Message, command: CommandObject, settings: Settings) -> None:
     start_param = normalize_start_param(command.args)
     first_name = message.from_user.first_name if message.from_user else None
+    opted_in = await register_start(message.from_user, start_param)
     if not is_webapp_url_ok(settings.webapp_url):
         log.warning("WEBAPP_URL is not an https URL (%r): replying without the Play button", settings.webapp_url)
-        await message.answer(start_text(first_name, with_button=False))
+        markup = build_start_keyboard(None, opted_in)
+        if markup is None:
+            await message.answer(start_text(first_name, with_button=False))
+        else:
+            await message.answer(start_text(first_name, with_button=False), reply_markup=markup)
         return
     url = build_webapp_url(settings.webapp_url, start_param)
-    await message.answer(start_text(first_name), reply_markup=build_play_keyboard(url))
+    await message.answer(start_text(first_name), reply_markup=build_start_keyboard(url, opted_in))
+
+
+async def register_start(user: object | None, start_param: str | None) -> bool | None:
+    """Remember that this player started the bot (users.bot_started_at; the row is created when the Mini App was never opened).
+    Returns the current reminder opt-in, or None when the database is not available (the toggle is then not offered).
+    Never raises: a database hiccup must not break /start."""
+    sm = runtime.get_sessionmaker()
+    tg_id = getattr(user, "id", None)
+    if sm is None or not isinstance(tg_id, int):
+        return None
+    try:
+        return await store.register_start(sm, store.Profile(
+            tg_id=tg_id, username=getattr(user, "username", None), first_name=getattr(user, "first_name", None),
+            last_name=getattr(user, "last_name", None), source=start_param))
+    except Exception as e:
+        log.warning("register_start failed: %s: %s", type(e).__name__, e)
+        return None

@@ -12,7 +12,8 @@ from app.main import amain, make_bot
 
 
 def test_job_registry_has_the_s4_jobs():
-    assert [j.id for j in JOBS] == ["seasons_rotate", "top_advance", "bots_grow"]
+    ids = [j.id for j in JOBS]
+    assert ids[:3] == ["seasons_rotate", "top_advance", "bots_grow"] and "outbox_delivery" in ids
 
 
 def test_register_jobs_registry_and_custom():

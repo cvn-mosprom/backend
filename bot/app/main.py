@@ -20,7 +20,9 @@ from aiogram.utils.token import TokenValidationError
 
 from .config import Settings
 from .handlers import build_router
+from .hr import runtime as hr_runtime
 from .jobs import build_scheduler, register_jobs
+from .player import runtime as player_runtime
 
 log = logging.getLogger("bot")
 
@@ -45,6 +47,9 @@ def configure_logging(level: str) -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)
+    # the 7 s outbox job would otherwise log two "Running job / executed successfully" lines per run (errors still show)
+    if level != "DEBUG":
+        logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 
 
 def make_bot(settings: Settings) -> Bot | None:
@@ -88,6 +93,7 @@ async def amain(settings: Settings, stop: asyncio.Event | None = None) -> int:
     log.info("scheduler started (env=%s)", settings.app_env)
 
     bot = make_bot(settings)
+    hr_runtime.setup(settings, bot)  # S6: DB session factory + bot for the HR commands and the outbox job
     try:
         if bot is None:
             await stop.wait()
@@ -106,6 +112,8 @@ async def amain(settings: Settings, stop: asyncio.Event | None = None) -> int:
         return 0
     finally:
         scheduler.shutdown(wait=False)
+        await hr_runtime.close()
+        await player_runtime.close()  # redis client of the 5xx alert
         if bot is not None:
             await bot.session.close()
         log.info("bot stopped")

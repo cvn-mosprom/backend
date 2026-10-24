@@ -11,7 +11,9 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - S4 part B done: server season rotation + season_results, state.season alignment, /internal/* (X-Internal-Token), bot APScheduler jobs (rotate 1 min, top-200 advance 12 min, bots grow 10 min).
 - S5 done: leads (18+, consent, one per season, tags, outbox lead_created/lead_revoked), DELETE leads/me (152-FZ), quiz (10 server-side questions), events batches with whitelist. Works with sim down.
 - S7 early done: sim circuit breaker, DB 3 s / lock 2 s / request 5 s timeouts, slow log, backup profile + scripts, restart resilience e2e, README for jury.
-- Tests now: api 652, sim 87, contract 212, bot 30, e2e 41 (E2E_DOCKER=1).
+- S6 done: HR bot (outbox delivery, lead cards + status buttons, /leads /export /funnel /sources /stats /top), reminders opt-in + order reminders, 5xx alert, ageConfirm -> users.age_confirmed.
+- S7 smoke suite done (e2e/test_s7_smoke.py, 36 scenarios / ~172 items). It found 5 real 500s, kept as xfail: NUL in idempotency_key, NUL in renameFactory name, leaderboard ?university=%00, factory/<5000 digits>, dev auth tg_id > bigint.
+- Tests now: api 662, sim 87, contract 212, bot 97, e2e 203 + 6 xfail.
 
 ## In progress
 - (none)
@@ -25,6 +27,5 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - Command after >8 h gap: sim runs capped bootstrap first, then the command.
 
 ## Next
-- S6: HR bot (/start start_param, lead card + status buttons, /leads filters, /export CSV, /funnel, /sources, /stats, /top by uni, outbox delivery, order reminders to consenting players, 5xx alert >20%/10 min). Also fix: sync users.age_confirmed from ageConfirm command.
-- S7 rest: smoke test 20–50 scenarios with two tabs and flaky network, final README.
+- Fix the 5 smoke-found 500s (turn xfail into pass), final README pass.
 - Migration ids are short: next is "0007" with down_revision "0006".

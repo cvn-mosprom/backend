@@ -283,6 +283,12 @@ class GameService:
             old_uni = old_player.get("university") if isinstance(old_player, dict) else None
             if "university" in values and values["university"] != old_uni:  # setUniversity: users.university follows
                 await session.execute(update(User).where(User.id == user_id).values(university=values["university"]))
+            new_player = snapshot.get("player")
+            if isinstance(new_player, dict) and new_player.get("ageConfirmed") is True and not (
+                    isinstance(old_player, dict) and old_player.get("ageConfirmed") is True):
+                # ageConfirm: the 18+ flag of the user row follows the sim state, in the same transaction
+                await session.execute(update(User).where(User.id == user_id, User.age_confirmed.is_(False)).values(
+                    age_confirmed=True, age_confirmed_at=func.now()))
         if version is not None:
             values["version"] = version
         size = len(orjson.dumps(values["state"]))

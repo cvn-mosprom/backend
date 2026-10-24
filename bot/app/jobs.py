@@ -11,9 +11,9 @@ never piles up.
 
 Planned entries (sprints S6-S7):
 
-* order reminders: notify consenting players about orders about to finish / expire   (S6)
-* HR digest and lead-card outbox delivery                                            (S6)
-* 5xx alert: >20 % 5xx over 10 minutes                                               (S6)
+* order reminders (``order_reminders``, 5 min, app/player/reminders.py) and the 5xx alert (``alert_5xx``, 1 min,
+  app/player/alerts.py): registered in S6, both idle without BOT_TOKEN
+* HR digest                                                                          (S6, open)
 
 To add a job append a ``JobSpec`` to ``JOBS``. Jobs are plain ``async def`` callables; the bot reads the
 database directly for analytics, but never touches game state of factories.
@@ -31,8 +31,11 @@ import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .config import Settings
+from .hr.outbox import outbox_delivery
+from .player.alerts import alert_5xx
+from .player.reminders import order_reminders
 
-log = logging.getLogger(__name__)
+log =logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,11 @@ JOBS: tuple[JobSpec, ...] = (
     JobSpec("seasons_rotate", seasons_rotate, "interval", {"minutes": 1}, "season rotation (close / open)"),
     JobSpec("top_advance", top_advance, "interval", {"minutes": 12, "jitter": 90}, "top-200 background catch-up"),
     JobSpec("bots_grow", bots_grow, "interval", {"minutes": 10, "jitter": 30}, "demo bots growth"),
+    # S6: lead cards / revocation notices to HR (does nothing without BOT_TOKEN, HR_ADMIN_TG_IDS or DATABASE_URL)
+    JobSpec("outbox_delivery", outbox_delivery, "interval", {"seconds": 7}, "HR outbox delivery (lead cards)"),
+    # S6 player side (both do nothing without BOT_TOKEN): order reminders for opted-in players, 5xx alert for the HR admins
+    JobSpec("order_reminders", order_reminders, "interval", {"minutes": 5, "jitter": 20}, "order reminders (opted-in players)"),
+    JobSpec("alert_5xx", alert_5xx, "interval", {"minutes": 1}, "5xx alert (>20% of 10 min) to HR admins"),
 )
 
 

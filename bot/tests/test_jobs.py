@@ -137,10 +137,13 @@ def test_api_client_is_built_from_the_environment(monkeypatch):
 def test_registered_jobs_are_single_instance_and_coalesced():
     async def test():
         scheduler = build_scheduler()
-        assert register_jobs(scheduler) == ["seasons_rotate", "top_advance", "bots_grow"]
+        ids = register_jobs(scheduler)
+        assert ids[:3] == ["seasons_rotate", "top_advance", "bots_grow"] and "outbox_delivery" in ids  # later sprints append
         by_id = {j.id: j for j in scheduler.get_jobs()}
         every = {i: j.trigger.interval.total_seconds() for i, j in by_id.items()}
-        assert every == {"seasons_rotate": 60, "top_advance": 12 * 60, "bots_grow": 10 * 60}
+        assert {k: every[k] for k in ("seasons_rotate", "top_advance", "bots_grow")} == {
+            "seasons_rotate": 60, "top_advance": 12 * 60, "bots_grow": 10 * 60}
+        assert every["outbox_delivery"] <= 10  # lead cards arrive within seconds
         assert by_id["top_advance"].trigger.jitter  # spread so replicas / restarts do not align
         assert all(j.max_instances == 1 and j.coalesce for j in by_id.values())
         assert [j.id for j in JOBS] == list(by_id)

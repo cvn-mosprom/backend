@@ -15,6 +15,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .errors import error_response
+from .metrics import record_request
 
 access_log = logging.getLogger("mosprom.access")
 app_log = logging.getLogger("mosprom.app")
@@ -111,6 +112,9 @@ class RequestContextMiddleware:
         finally:
             request_id_var.reset(token)
             self._log(scope, state, rid, status, started)
+            # S6: per-minute counters for the bot's 5xx alert (after the response is out; fail-open, 250 ms cap)
+            await record_request(getattr(getattr(scope.get("app"), "state", None), "redis", None),
+                                 scope.get("path", ""), status)
 
     def _log(self, scope: Scope, state: dict, rid: str, status: int | None, started: float) -> None:
         path = scope.get("path", "")

@@ -42,6 +42,11 @@ class User(Base):
     is_bot: Mapped[bool] = mapped_column(server_default=text("false"), nullable=False)
     created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
     last_seen_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    # S6 reminders (written by the bot): first /start, opt-in to order reminders, last opt-in / opt-out moments
+    bot_started_at: Mapped[datetime | None] = _tstz()
+    notify_opt_in: Mapped[bool] = mapped_column(server_default=text("false"), nullable=False)
+    notify_opt_in_at: Mapped[datetime | None] = _tstz()
+    notify_opt_out_at: Mapped[datetime | None] = _tstz()
 
 
 class Season(Base):
@@ -225,3 +230,16 @@ class Event(Base):
 
 Index("ix_events_name_ts", Event.name, Event.ts)
 Index("ix_events_user_ts", Event.user_id, Event.ts)
+
+
+# ---------------------------------------------------------------- S6: order reminders
+
+class ReminderSent(Base):
+    """Dedupe of the bot's order reminders: a (player, order, kind) pair is reminded at most once."""
+
+    __tablename__ = "reminders_sent"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    order_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)  # eta | deadline
+    sent_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)

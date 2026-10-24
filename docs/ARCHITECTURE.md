@@ -246,3 +246,14 @@ Alembic `0006` (down_revision `0005`: the revision ids are the short strings `00
   Response `{accepted:n}`; `source` = `users.source`; `users.is_bot` batches are validated and dropped (`accepted: 0`).
 - **Client** (`clients/web/HttpGameApi.ts`): `submitLead` (adds `consentTextVersion`, 409 counts as ok, `lastLeadError`), `myLead`, `revokeLead`,
   `quizQuestions`, `quizAnswer`, `track` (clamps `ts` to the server clock, drops 4xx batches, rethrows network/429/5xx so analytics.ts re-queues).
+
+## S6 decisions
+
+- HR bot (`bot/app/hr/`): access by `HR_ADMIN_TG_IDS`; lead cards to `HR_CHAT_ID` or every admin; outbox job every 7 s
+  (`FOR UPDATE SKIP LOCKED`, backoff, never consumed without BOT_TOKEN); status buttons append an audit line to `hr_note`;
+  /leads /lead /export (CSV `;` + BOM) /funnel /sources /stats /top /hr. Demo bots excluded from all analytics.
+- Player features (`bot/app/player/`, migration 0007): /start upserts the user (first-touch source), reminder opt-in toggle,
+  /notify /stop; order reminders every 5 min from `factories.snapshot` (completion field optional until S1: `etaAt`/`completesAt`,
+  else deadline), quiet hours 23–09 MSK, dedupe table `reminders_sent`; 5xx alert from Redis per-minute counters
+  (`metrics:req:*`, `metrics:5xx:*`), ≥20 requests and >20 % 5xx over 10 min, 15 min cooldown.
+- `users.age_confirmed` follows `snapshot.player.ageConfirmed` in the same transaction as the command.

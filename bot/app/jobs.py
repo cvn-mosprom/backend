@@ -87,6 +87,11 @@ def set_api(api: InternalApi | None) -> None:
     _api = api
 
 
+def get_api(settings: Settings | None = None) -> InternalApi:
+    """The injected client (tests) or the one built from the env / the given settings."""
+    return _api or InternalApi.from_env(settings)
+
+
 async def call_internal(job: str, path: str, payload: dict[str, Any] | None = None,
                         timeout_s: float = 60) -> dict[str, Any] | None:
     """One internal call of a job: returns the JSON answer, or None after logging why it failed. Never raises

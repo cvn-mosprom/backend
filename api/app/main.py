@@ -12,7 +12,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from .db import make_engine, make_redis, make_sessionmaker
 from .errors import install_error_handlers
 from .middleware import RequestContextMiddleware, setup_logging
-from .routes import board, events, game, health, internal, leads, me, quiz
+from .routes import board, events, game, health, internal, leads, me, quiz, webauth
 from .settings import Settings, get_settings
 from .sim_client import SimClient
 
@@ -77,4 +77,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(quiz.router)
     app.include_router(events.router)
     app.include_router(internal.router)  # /internal/* for the bot's jobs: token-protected, not proxied by caddy
+    app.include_router(webauth.router)  # S14: web login via the Telegram bot (public + Bearer session)
+    app.include_router(webauth.internal_router)  # S14: /internal/auth/* called by the bot
     return app

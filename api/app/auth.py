@@ -1,6 +1,7 @@
 """Authentication: Telegram Mini Apps initData (HMAC) + dev mode, `current_user` upsert.
 
-Header: `Authorization: tma <raw initData>` (prod) or `Authorization: dev <tg_id>[:<name>]` (DEV_AUTH=1); the web client
+Header: `Authorization: tma <raw initData>` (prod), `Authorization: Bearer <web session token>` (S14, web login through the
+bot, app/webauth.py) or `Authorization: dev <tg_id>[:<name>]` (DEV_AUTH=1); the web client
 sends `X-Telegram-Init-Data: <raw initData>` or (dev only) `X-Dev-User: <tg_id>` instead, see `credentials()` for the priority.
 Stage 1 (`get_identity`) is DB-free and memoised on the request; stage 2 (`current_user`) upserts the user row.
 """
@@ -120,10 +121,27 @@ def credentials(request: Request) -> tuple[str, str]:
     raise AppError("unauthorized", "Authorization, X-Telegram-Init-Data or X-Dev-User header is required")
 
 
+async def _bearer_identity(request: Request, token: str) -> Identity:
+    """`Authorization: Bearer <token>` -> the Telegram identity of the session's user (so every endpoint sees the same
+    tg_id / users row / factory as with initData). Needs the DB; also remembers the session id for DELETE /api/auth/web/session."""
+    from . import webauth  # webauth imports this module
+
+    sm = request.app.state.sessionmaker
+    if sm is None:
+        raise AppError("config_error", "DATABASE_URL is not configured")
+    info = await webauth.resolve_bearer(sm, token)
+    request.state.web_session_id = info.session_id
+    request.state.web_session_expires_at = info.expires_at
+    u = info.user
+    return Identity(tg_id=u.tg_id, first_name=u.first_name, last_name=u.last_name, username=u.username)
+
+
 async def _authenticate(request: Request) -> Identity:
     settings: Settings = request.app.state.settings
     scheme, value = credentials(request)
 
+    if scheme == "bearer":  # S14: web session token issued after a login through the Telegram bot (app/webauth.py)
+        return await _bearer_identity(request, value)
     if scheme == "dev" and settings.dev_auth_enabled:  # never in prod: APP_ENV=prod forces dev_auth_enabled off
         return parse_dev_header(value)
     if scheme != "tma":  # includes `dev` while DEV_AUTH is off

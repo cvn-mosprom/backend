@@ -144,12 +144,14 @@ Index("ix_season_results_user", SeasonResult.user_id)
 # ---------------------------------------------------------------- S5: leads, outbox, quiz, events
 
 class Lead(Base):
-    """Candidate form of the case (one per user per season). Personal data: never logged. `consent_revoked_at` set
-    = 152-FZ revocation: the row stays (status unchanged) but is excluded from the active funnel and mailings."""
+    """Candidate form of the case (one ACTIVE per user per season). Personal data: never logged. `consent_revoked_at` set
+    = 152-FZ revocation: the row stays for the audit (status unchanged) but is excluded from the active funnel, mailings,
+    GET /leads/me and the one-per-season uniqueness (partial unique index below), so the player may submit a new form."""
 
     __tablename__ = "leads"
     __table_args__ = (
-        sa.UniqueConstraint("user_id", "season_id", name="uq_leads_user_season"),
+        sa.Index("uq_leads_user_season_active", "user_id", "season_id", unique=True,
+                 postgresql_where=sa.text("consent_revoked_at IS NULL")),
         sa.CheckConstraint("status in ('new','contacted','interview','rejected','hired')", name="status"),
         sa.CheckConstraint("practice_type is null or practice_type in ('paid','free','job')", name="practice_type"),
         sa.CheckConstraint("institution_kind is null or institution_kind in ('vuz','college')", name="institution_kind"),
@@ -248,3 +250,60 @@ class ReminderSent(Base):
     order_id: Mapped[str] = mapped_column(Text, primary_key=True)
     kind: Mapped[str] = mapped_column(Text, primary_key=True)  # eta | deadline
     sent_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+# ---------------------------------------------------------------- S14: web login via the Telegram bot
+
+class WebLoginCode(Base):
+    """One-time 6-digit code the bot hands to a player (`/login`). Only sha256(code) is stored. Single use: `used_at`
+    is set when the code is exchanged for a session OR invalidated by a newer code / logout (partial unique index:
+    two live codes never share a hash, so the code alone identifies the player)."""
+
+    __tablename__ = "web_login_codes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    expires_at: Mapped[datetime] = _tstz(nullable=False)
+    used_at: Mapped[datetime | None] = _tstz()
+
+
+Index("uq_web_login_codes_live_hash", WebLoginCode.code_hash, unique=True, postgresql_where=text("used_at IS NULL"))
+Index("ix_web_login_codes_user", WebLoginCode.user_id)
+
+
+class WebLoginRequest(Base):
+    """Deep-link login: the web page `start`s a request (random nonce, stored as sha256), the bot `approve`s it for a
+    Telegram user, the page `poll`s until it can take the session token once (`consumed_at`)."""
+
+    __tablename__ = "web_login_requests"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    nonce_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    expires_at: Mapped[datetime] = _tstz(nullable=False)
+    approved_at: Mapped[datetime | None] = _tstz()
+    consumed_at: Mapped[datetime | None] = _tstz()
+
+
+Index("ix_web_login_requests_user", WebLoginRequest.user_id)
+
+
+class WebSession(Base):
+    """Opaque bearer token of the web client (`Authorization: Bearer <token>`), stored as sha256. Sliding expiry."""
+
+    __tablename__ = "web_sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    last_seen_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    expires_at: Mapped[datetime] = _tstz(nullable=False)
+    revoked_at: Mapped[datetime | None] = _tstz()
+    user_agent: Mapped[str | None] = mapped_column(Text)
+
+
+Index("ix_web_sessions_user", WebSession.user_id)

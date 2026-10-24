@@ -336,9 +336,11 @@ def lead_out(l: Lead) -> dict[str, Any]:
 
 
 async def lead_status(session: AsyncSession, user_id: int) -> str | None:
-    """Value of `leadStatus` in the season summary: the latest lead's status, 'revoked' after a consent revocation."""
+    """Value of `leadStatus` in the season summary: the status of the latest non-revoked lead, else 'revoked' when only
+    revoked ones exist, else None."""
     row = (await session.execute(select(Lead.status, Lead.consent_revoked_at).where(Lead.user_id == user_id)
-                                 .order_by(Lead.created_at.desc(), Lead.id.desc()).limit(1))).one_or_none()
+                                 .order_by(Lead.consent_revoked_at.is_(None).desc(), Lead.created_at.desc(), Lead.id.desc())
+                                 .limit(1))).one_or_none()
     if row is None:
         return None
     return "revoked" if row.consent_revoked_at is not None else row.status
@@ -387,13 +389,12 @@ class LeadService:
                 consent=True, consent_at=now, consent_text_version=c.consent_version, tags=tags,
                 best_profession=best, season_place=place, quiz_score=correct if answered else None)
             lead = (await session.execute(
-                pg_insert(Lead).values(**values).on_conflict_do_nothing(constraint="uq_leads_user_season").returning(Lead)
+                pg_insert(Lead).values(**values).on_conflict_do_nothing(
+                    index_elements=[Lead.user_id, Lead.season_id], index_where=Lead.consent_revoked_at.is_(None)).returning(Lead)
             )).scalar_one_or_none()
-            if lead is None:
-                revoked = (await session.execute(select(Lead.consent_revoked_at).where(
-                    Lead.user_id == user.id, Lead.season_id == season_id))).scalar_one_or_none() is not None
+            if lead is None:  # a revoked lead does not count: the player may submit again after revoking
                 raise AppError("lead_already_exists", "A lead for this season already exists",
-                               details={"season_id": season_id, "revoked": revoked})
+                               details={"season_id": season_id})
             await enqueue(session, "lead_created", {
                 "lead_id": lead.id, "user_id": user.id, "tg_id": user.tg_id, "season_id": season_id,
                 "source": user.source, "full_name": lead.full_name, "university": lead.university,
@@ -405,8 +406,9 @@ class LeadService:
         return {"ok": True, **lead_out(lead)}
 
     async def current(self, user: User) -> dict[str, Any]:
+        """The player's latest NON-revoked lead; a revoked one is "forgotten" for the owner (404), the row stays in the DB."""
         async with self.sm() as session:
-            lead = (await session.execute(select(Lead).where(Lead.user_id == user.id)
+            lead = (await session.execute(select(Lead).where(Lead.user_id == user.id, Lead.consent_revoked_at.is_(None))
                                           .order_by(Lead.created_at.desc(), Lead.id.desc()).limit(1))).scalar_one_or_none()
         if lead is None:
             raise AppError("lead_not_found", "No lead yet")

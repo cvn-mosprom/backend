@@ -9,8 +9,12 @@ export const BASE = (process.env.E2E_BASE ?? 'https://localhost').replace(/\/+$/
 /** Seconds to wait for the tutorial shipment (the tutorial line needs ~55 s); 0 = stop right after "loading started". */
 export const ORDER_WAIT_S = Number(process.env.E2E_ORDER_WAIT_S ?? '90');
 
-/** A fresh dev player id (the server takes any positive 64-bit integer). */
-export const newDevUser = () => String(1_000_000_000 + Math.floor(Math.random() * 9_000_000_000));
+/**
+ * A fresh dev player id: the server takes any positive 64-bit integer, and ids >= 10^12 are the reserved test range (api/app/testusers.py:
+ * X-Dev-User carries no name here, so this is what flags the player is_test and keeps it out of the top / HR stats).
+ * 10^12 .. 10^12 + 9*10^12 stays an exact JS integer (< 2^53) and below 2^63 - 1.
+ */
+export const newDevUser = () => String(1_000_000_000_000 + Math.floor(Math.random() * 9_000_000_000_000));
 
 /**
  * One browser tab of `user`, configured like the app: baseUrl from VITE_API_URL (vitest.config.ts), no Telegram initData -> X-Dev-User.

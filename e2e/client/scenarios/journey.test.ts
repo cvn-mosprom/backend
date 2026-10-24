@@ -209,10 +209,9 @@ describe('player journey', () => {
 		expect((await summary()).leadStatus).toBe('revoked');
 	});
 
-	// KNOWN SERVER DEVIATION (reported in S10): fakeApi/MockGameApi drop the form on revoke; the server keeps the row (consent_revoked_at) and
-	// GET /api/leads/me still returns it, so after "анкета удалена" the lead screen shows the revoked lead again on the next open.
-	// it.fails turns red when the server is fixed (GET /api/leads/me -> 404 lead_not_found after a revoke): then make it a plain it().
-	it.fails('revokeLead: getLead() is null afterwards (what the client expects)', async () => {
+	// Like fakeApi/MockGameApi: the form is forgotten on revoke (GET /api/leads/me -> 404 lead_not_found -> getLead() null); the server keeps the
+	// revoked row (consent_revoked_at) for the audit.
+	it('revokeLead: getLead() is null afterwards (what the client expects)', async () => {
 		expect(await c.getLead()).toBeNull();
 	});
 });

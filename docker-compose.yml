@@ -100,6 +100,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       SIM_URL: http://sim:8080
       INTERNAL_TOKEN: *internal-token
+      # S14 web login through the bot: username without "@" for the deep link of POST /api/auth/web/start (empty -> 503 config_error)
+      BOT_USERNAME: ${BOT_USERNAME:-}
       # CORS of the web client (empty: dev -> http://localhost:5173, prod -> origin of WEBAPP_URL, else https://DOMAIN)
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       WEBAPP_URL: ${WEBAPP_URL:-}

@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     # Empty = the internal API is disabled (always 401). APP_ENV=prod refuses to start with an empty/placeholder value.
     internal_token: str = ""
 
+    # S14 web login via the bot: username of the bot WITHOUT '@' (only for the deep link of POST /api/auth/web/start;
+    # empty -> that endpoint answers 503 config_error, the code login keeps working).
+    bot_username: str = ""
+
     # Rate limiter: master switch + per-name override of the max requests per window,
     # e.g. RATE_LIMIT_OVERRIDES='{"command": 600}'.
     rate_limit_enabled: bool = True
@@ -89,6 +93,11 @@ class Settings(BaseSettings):
     @classmethod
     def _db_url(cls, v: str) -> str:
         return normalize_db_url(v)
+
+    @field_validator("bot_username", mode="after")
+    @classmethod
+    def _bot_username(cls, v: str) -> str:
+        return v.strip().lstrip("@")
 
     @property
     def is_prod(self) -> bool:

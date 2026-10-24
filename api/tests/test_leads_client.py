@@ -208,7 +208,9 @@ async def test_revoke_after_a_client_lead(engage):
     await post_client(engage)
     assert (await engage.delete("/api/leads/me", headers=dev(1))).status_code == 204
     assert (await engage.delete("/api/leads/me", headers=dev(1))).status_code == 204  # idempotent
-    assert (await engage.get("/api/leads/me", headers=dev(1))).json()["consentRevokedAt"] is not None
+    assert_error(await engage.get("/api/leads/me", headers=dev(1)), 404, "lead_not_found")  # forgotten for the owner
+    assert await engage.db.fetchval("SELECT consent_revoked_at IS NOT NULL FROM leads")  # the row stays for the audit
+    assert (await post_client(engage)).status_code == 201  # and a new form may be submitted in the same season
     assert_error(await engage.delete("/api/leads/me", headers=dev(9)), 404, "lead_not_found")
 
 
@@ -241,6 +243,37 @@ def test_migration_0008_adds_the_column_and_downgrades(pg_url):
     up = alembic("upgrade", "head")
     assert up.returncode == 0, up.stderr
     assert asyncio.run(state())[0] is True
+
+
+def test_migration_0010_partial_unique_and_downgrade_keeps_the_latest(pg_url):
+    import asyncio
+
+    import asyncpg
+
+    async def run(sql: str, fetch: bool = False):
+        conn = await asyncpg.connect(TEST_DB_URL.replace("postgresql+asyncpg://", "postgresql://"))
+        try:
+            return await (conn.fetch if fetch else conn.execute)(sql)
+        finally:
+            await conn.close()
+
+    def lead(revoked: bool) -> str:
+        return ("INSERT INTO leads (user_id, season_id, full_name, university, consent, consent_at, consent_text_version, consent_revoked_at) "
+                f"SELECT u.id, s.id, 'X', 'U', true, now(), 'v1', {'now()' if revoked else 'NULL'} FROM users u, seasons s")
+
+    asyncio.run(run("TRUNCATE users, seasons CASCADE"))
+    asyncio.run(run("INSERT INTO users (tg_id, first_name) VALUES (7, 'u')"))
+    asyncio.run(run("INSERT INTO seasons (starts_at, ends_at, days) VALUES (now(), now() + interval '7 days', 7)"))
+    asyncio.run(run(lead(True)))
+    asyncio.run(run(lead(False)))  # a revoked and an active lead of one player in one season
+    with pytest.raises(asyncpg.UniqueViolationError):
+        asyncio.run(run(lead(False)))  # a second ACTIVE one is still refused
+    down = alembic("downgrade", "0009")
+    assert down.returncode == 0, down.stderr
+    rows = asyncio.run(run("SELECT consent_revoked_at IS NULL AS active FROM leads", True))
+    assert [r["active"] for r in rows] == [True]  # the latest row is kept (the old schema holds one per season)
+    up = alembic("upgrade", "head")
+    assert up.returncode == 0, up.stderr
 
 
 async def test_institution_kind_check_constraint(engage):

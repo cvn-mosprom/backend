@@ -54,7 +54,7 @@ x-sim: &sim
   # image is pinned to the vendored frontend commit (lib/sim): a lib/sim bump = new tag = new sim image
   image: mosprom-sim:${SIM_COMMIT:-dev}
   restart: unless-stopped
-  mem_limit: 640m # ~100 MB per Node worker at idle; SIM_WORKERS (1..4) bounds the total
+  mem_limit: 640m # ~100 MB per Node worker at idle; SIM_WORKERS (1..256; 0 = CPU auto) bounds the total
   env_file: *env-file
   environment:
     PORT: "8080"
@@ -79,6 +79,8 @@ services:
     build:
       context: . # repo root: the image bundles vendor/frontend/web (web/Dockerfile.dockerignore)
       dockerfile: web/Dockerfile
+      args:
+        EXTERNAL_MEDIA: "1"
     image: mosprom-caddy:${WEB_TAG:-dev}
     restart: unless-stopped
     mem_limit: 256m
@@ -177,8 +179,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       WEBAPP_URL: ${WEBAPP_URL:-}
       DOMAIN: ${DOMAIN:-localhost}
-      # uvicorn worker processes (WEB_CONCURRENCY). Keep <= 4: each worker holds a DB pool of DB_POOL_SIZE+DB_MAX_OVERFLOW
-      # (5+5), so 4 workers = 40 of Postgres' 100 connections. The sim is the CPU hog, not the API.
+      # Each worker holds DB_POOL_SIZE+DB_MAX_OVERFLOW connections. Match workers/replicas to
+      # CPU/RAM and database capacity; production connection budgets live in deploy.
       WEB_CONCURRENCY: ${API_WORKERS:-2}
     expose:
       - "8000"

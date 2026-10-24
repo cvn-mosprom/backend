@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import ssl
 from typing import Any
 from uuid import uuid4
 
@@ -28,6 +30,8 @@ def connect_args(pgbouncer: bool) -> dict[str, Any]:
     """Same semantics as api/app/db.py: transaction pooling (PGBOUNCER=1) -> no prepared statement caches and a
     client-side command_timeout instead of startup parameters (pgbouncer rejects those)."""
     args: dict[str, Any] = {"timeout": 5}
+    if os.environ.get("DB_TLS") == "1":
+        args["ssl"] = ssl.create_default_context(cafile=os.environ["DB_CA_FILE"])
     if pgbouncer:
         args.update(
             command_timeout=STATEMENT_TIMEOUT_MS / 1000,

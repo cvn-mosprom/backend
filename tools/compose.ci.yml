@@ -1,0 +1,12 @@
+services:
+  db:
+    ports: !override ['127.0.0.1::5432']
+  redis:
+    ports: !override ['127.0.0.1::6379']
+  sim:
+    ports: !override ['127.0.0.1::8080']
+  caddy:
+    ports: !override ['127.0.0.1::80']
+  bot:
+    # CI must never connect to Telegram, even when the API uses a synthetic signing key.
+    command: [python, -c, 'import time; time.sleep(3600)']

@@ -15,14 +15,15 @@ def web() -> httpx.Client:
         yield c
 
 
-def test_root_serves_the_app_html(web):
+def test_root_serves_prerendered_landing_html(web):
     r = web.get("/")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
-    assert "<!doctype html" in r.text.lower() and "/_app/" in r.text  # the SvelteKit shell
+    assert "<!doctype html" in r.text.lower() and "/_app/" in r.text  # the SvelteKit landing
     assert r.headers["cache-control"] == "no-cache"
+    assert 'id="hero-heading"' in r.text
 
 
-@pytest.mark.parametrize("path", ["/play", "/privacy", "/some/client/route", "/landing"])
+@pytest.mark.parametrize("path", ["/app", "/play", "/privacy", "/some/client/route"])
 def test_spa_routes_fall_back_to_html(web, path):
     r = web.get(path)
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
@@ -31,9 +32,9 @@ def test_spa_routes_fall_back_to_html(web, path):
 def test_hashed_assets_are_cached_forever(web):
     import re
 
-    asset = re.search(r'"(/_app/immutable/[^"]+\.js)"', web.get("/").text)
+    asset = re.search(r'"((?:\./|/)_app/immutable/[^"]+\.js)"', web.get("/").text)
     assert asset, "no hashed asset referenced from index.html"
-    r = web.get(asset.group(1))
+    r = web.get(asset.group(1).removeprefix("."))
     assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
     assert "javascript" in r.headers["content-type"]
 
@@ -69,3 +70,10 @@ def test_events_batch_with_an_unknown_name_is_partially_accepted(api: Api):
     assert r.status_code == 200
     assert (r.json()["accepted"], r.json()["rejected"]) == (2, 1)
     assert sql(f"SELECT count(*) FROM events WHERE user_id = {uid_of(api)}") == "2"
+
+
+@pytest.mark.parametrize("path", ["/landing", "/landing/"])
+def test_legacy_landing_redirects_to_root(web, path):
+    response = web.get(path)
+    assert response.status_code == 308
+    assert response.headers["location"] == "/"

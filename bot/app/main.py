@@ -9,12 +9,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.utils.token import TokenValidationError
 
@@ -58,7 +60,11 @@ def make_bot(settings: Settings) -> Bot | None:
         log.warning("BOT_TOKEN is empty: the bot will not connect to Telegram and just idles (set BOT_TOKEN in .env)")
         return None
     try:
-        return Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        return Bot(
+            token=settings.bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            session=AiohttpSession(proxy=settings.telegram_proxy_url) if settings.telegram_proxy_url else None,
+        )
     except TokenValidationError:
         log.error("BOT_TOKEN is malformed: the bot will not connect to Telegram and just idles")
         return None
@@ -87,12 +93,15 @@ async def amain(settings: Settings, stop: asyncio.Event | None = None) -> int:
     stop = stop or asyncio.Event()
     install_signal_handlers(stop)
 
+    bot = make_bot(settings)
+    if settings.app_env == "prod" and bot is None:
+        raise RuntimeError("Valid BOT_TOKEN required in production")
+
     scheduler = build_scheduler()
     register_jobs(scheduler)
     scheduler.start()
     log.info("scheduler started (env=%s)", settings.app_env)
 
-    bot = make_bot(settings)
     hr_runtime.setup(settings, bot)  # S6: DB session factory + bot for the HR commands and the outbox job
     try:
         if bot is None:
@@ -123,6 +132,9 @@ def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
     log.info("bot starting (webapp_url=%s)", settings.webapp_url or "-")
+    if os.environ.get("ETCD_ENDPOINTS"):
+        from .lease import run_with_lease
+        raise SystemExit(asyncio.run(run_with_lease(lambda stop: amain(settings, stop))))
     raise SystemExit(asyncio.run(amain(settings)))
 
 

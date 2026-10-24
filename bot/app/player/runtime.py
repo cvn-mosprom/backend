@@ -44,9 +44,9 @@ def get_redis(settings: Settings) -> Any:
     global _redis, _redis_key
     if _redis_key != settings.redis_url:
         if settings.redis_url:
-            import redis.asyncio as aioredis
+            from ..redis_client import create_redis
 
-            _redis = aioredis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=2, socket_timeout=3)
+            _redis = create_redis(settings.redis_url)
         else:
             _redis = None
         _redis_key = settings.redis_url

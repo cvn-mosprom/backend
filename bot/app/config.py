@@ -10,6 +10,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Settings:
     bot_token: str = ""
+    telegram_proxy_url: str = ""
     # Public https URL of the Mini App (the web build served by caddy). Empty -> /start answers without a button.
     webapp_url: str = ""
     log_level: str = "INFO"
@@ -34,8 +35,9 @@ class Settings:
         webapp = e.get("WEBAPP_URL", "").strip()
         if not webapp and domain:
             # DOMAIN may be a bare host (localhost, game.example.com) or already carry a scheme.
-            webapp = domain if domain.startswith(("http://", "https://")) else f"https://{domain}"
+            webapp = (domain if domain.startswith(("http://", "https://")) else f"https://{domain}").rstrip("/") + "/app"
         return cls(
+            telegram_proxy_url=e.get("TELEGRAM_PROXY_URL", "").strip(),
             bot_token=e.get("BOT_TOKEN", "").strip(),
             webapp_url=webapp.rstrip("/") if webapp else "",
             log_level=e.get("LOG_LEVEL", "INFO").strip().upper() or "INFO",

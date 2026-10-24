@@ -7,10 +7,10 @@
 <sub>Хакатон **Открой#Моспром** · кейс «Очаково» — [github.com/cvn-mosprom](https://github.com/cvn-mosprom)</sub>
 
 <!--STATS-->
-**35** HTTP-операций &nbsp;·&nbsp; **27** игровых команд &nbsp;·&nbsp; **19** таблиц &nbsp;·&nbsp; **14** миграций &nbsp;·&nbsp; **38** достижений &nbsp;·&nbsp; **1800+** тестов &nbsp;·&nbsp; **9** сервисов Compose
+**37** HTTP-операций &nbsp;·&nbsp; **27** игровых команд &nbsp;·&nbsp; **19** таблиц &nbsp;·&nbsp; **14** миграций &nbsp;·&nbsp; **38** достижений &nbsp;·&nbsp; **1800+** тестов &nbsp;·&nbsp; **9** сервисов Compose
 <!--/STATS-->
 
-[Быстрый старт](#быстрый-старт) · [Примеры](#примеры-использования) · [Как устроено](#как-устроено) · [Что внутри](#что-внутри) · [Надёжность](#надёжность) · [Демо в Telegram](#демо-в-telegram) · [Настройка](#настройка) · [Разработка](#разработка) · [Безопасность](#безопасность) · [Ограничения](#ограничения-и-известные-проблемы)
+[Быстрый старт](#быстрый-старт) · [Примеры](#примеры-использования) · [Как устроено](#как-устроено) · [Что внутри](#что-внутри) · [Надёжность](#надёжность) · [Демо в Telegram](#демо-в-telegram) · [CI/CD](#cicd-и-production) · [Настройка](#настройка) · [Разработка](#разработка) · [Безопасность](#безопасность) · [Ограничения](#ограничения-и-известные-проблемы)
 
 | <img src="docs/img/game-strip.jpg" width="560" alt="Игра на телефоне: пустой ангар, стройка трубы, миниигра смены, две линии, провал смены"> | <img src="docs/img/hr-candidates.jpg" width="300" alt="CRM подбора: список кандидатов с очками достижений и лучшим fit"> |
 |:-:|:-:|
@@ -70,7 +70,7 @@ SIM_COMMIT=$(sh scripts/simcommit.sh) docker compose up -d --build
 curl -k https://localhost/ready
 ```
 
-Ожидается `{"status":"ready","checks":{"db":"ok","migrations":"ok","redis":"ok","sim":"ok","config":"ok"}}`. Откройте https://localhost/ и примите локальный сертификат Caddy — это Mini App; вне Telegram (`DEV_AUTH=1`, `APP_ENV=dev`) клиент сам придумывает и запоминает dev-id игрока.
+Ожидается `{"status":"ready","checks":{"db":"ok","migrations":"ok","redis":"ok","sim":"ok","config":"ok"}}`. Откройте https://localhost/app и примите локальный сертификат Caddy — это Mini App (на `/` — лендинг); вне Telegram (`DEV_AUTH=1`, `APP_ENV=dev`) клиент сам придумывает и запоминает dev-id игрока.
 
 Чтобы топ не был пустым — 40 демо-ботов:
 
@@ -80,10 +80,12 @@ docker compose exec api python -m app.seed_bots
 
 | Адрес | Что это |
 |---|---|
-| https://localhost/ | Mini App (SPA с fallback на `index.html`: `/play`, `/privacy`, `/hr`, пререндер `/landing`) |
+| https://localhost/ | карьерный лендинг (старый `/landing` — редирект 308 сюда) |
+| https://localhost/app | Mini App; SPA-маршруты `/privacy`, `/hr` и другие — через fallback |
 | https://localhost/health | liveness |
 | https://localhost/ready | готовность: Postgres, миграции, Redis, sim, обязательные переменные (+ медиа, информативно) |
 | https://localhost/api/* | публичный API |
+| https://localhost/routing/ping | анонимная некэшируемая проба региона для выбора дата-центра |
 | https://localhost/internal/* | снаружи всегда `404` — только для бота внутри сети Compose |
 | `127.0.0.1:55432` | PostgreSQL (`mosprom` / `mosprom`) |
 | `127.0.0.1:56379` | Redis |
@@ -204,7 +206,7 @@ flowchart LR
 
 | Группа | Эндпоинты | Таблицы |
 |---|---|---|
-| Здоровье | `GET /health`, `GET /ready` | — |
+| Здоровье и маршрутизация | `GET /health`, `GET /ready`, `GET /routing/ping`, `POST /routing/report`, `/metrics` (закрыт ingress-ом) | — |
 | Игра | `GET /api/bootstrap`, `POST /api/command`, `POST /api/advance`, `GET /api/factory/me`, `GET /api/me` | `users`, `factories`, `shifts`, `reminders_sent` |
 | Сезон | `GET /api/season/leaderboard`, `GET /api/season/summary`, `GET /api/factory/{id}` | `seasons`, `season_results` |
 | Анкеты | `POST /api/leads`, `GET` / `DELETE /api/leads/me`, `POST /api/leads/public`, `DELETE /api/leads/public/{id}` | `leads`, `lead_events`, `outbox` |
@@ -234,7 +236,7 @@ api/alembic/versions/    0001_initial … 0014_public_landing
 
 * **Таймауты на каждом уровне.** Statement timeout БД 3 с и lock timeout 2 с (`503 db_unavailable`), sim 3 с, весь запрос 5 с (`503 timeout` + `Retry-After: 1`; `/internal/*` исключены). Запросы дольше 1 с пишутся в лог как `slow request` с `duration_ms`.
 * **Circuit breaker к sim.** 5 неудач подряд — 10 секунд быстрых отказов, затем одна проба; состояние видно в логах как `breaker_state`.
-* **Ограниченные ресурсы.** `API_WORKERS` и `SIM_WORKERS` не больше 4 (у каждого воркера свой пул БД на 10 соединений), `restart: unless-stopped` у всех сервисов, тело запроса до 2 МБ на Caddy.
+* **Явные ресурсы.** `API_WORKERS`, пулы БД и `SIM_WORKERS` (целое 0..256, 0 — отладочный режим) подбираются вместе с CPU/RAM и бюджетом соединений; production-значения ведёт `deploy`. `restart: unless-stopped` у всех сервисов, тело запроса до 2 МБ на Caddy.
 * **Бэкапы.** `docker compose --profile backup up -d backup` — `pg_dump -Fc` в `./backups` сразу и каждые `BACKUP_INTERVAL_H` (6) часов, хранятся последние `BACKUP_KEEP` (28). Вручную — `sh scripts/backup.sh`; восстановление (стоп api и бота, страховочный дамп, миграции после) — `sh scripts/restore.sh backups/<файл>.dump`.
 * **Медиа не роняют игру.** Нет SeaweedFS — `/ready` показывает `checks.media: "error: …"`, но отвечает 200, медиа-ссылки отдают 502. Бакет воспроизводим из репозитория, бэкапить его не нужно.
 
@@ -250,12 +252,29 @@ docker compose restart api sim db
 
 Mini App открывается только по HTTPS на реальном домене — с машины разработчика это не проверить. Порядок:
 
-1. `.env`: `APP_ENV=prod`, `DEV_AUTH=0`, `DOMAIN=<домен>` (A-запись на хост, открыты 80/443), `BOT_TOKEN`, `WEBAPP_URL=https://<домен>/`, настоящие `INTERNAL_TOKEN` и `POSTGRES_PASSWORD`, `HR_ADMIN_TG_IDS=<свой tg id>` (по желанию `HR_CHAT_ID`). В @BotFather — URL Mini App и кнопки меню равен `WEBAPP_URL`.
+1. `.env`: `APP_ENV=prod`, `DEV_AUTH=0`, `DOMAIN=<домен>` (A-запись на хост, открыты 80/443), `BOT_TOKEN`, `WEBAPP_URL=https://<домен>/app`, настоящие `INTERNAL_TOKEN` и `POSTGRES_PASSWORD`, `HR_ADMIN_TG_IDS=<свой tg id>` (по желанию `HR_CHAT_ID`). В @BotFather — URL Mini App и кнопки меню равен `WEBAPP_URL`.
 2. `SIM_COMMIT=$(sh scripts/simcommit.sh) docker compose up -d --build`, затем `curl https://<домен>/ready` — всё `ok`; `docker compose exec api python -m app.seed_bots` и `docker compose exec api python -m app.purge_test_users` (убирает e2e- и тестовых игроков, чтобы топ был чистым).
 3. В Telegram: `/start` → «Играть» → обучение, заказ, линия, смена (кредиты и звёзды меняются, у заказа появляется `etaAt`), undo работает, «Топ» показывает ботов и вас; анкета 18+ с согласием; квиз; карточка анкеты приходит в HR-бот (`/leads`, `/funnel`, `/sources`, `/stats`, `/export`) с кнопками статусов.
 4. После: `docker compose logs api | grep -c '"status": 5'` — 0, в `docker compose logs bot` нет строк ERROR.
 
-Серверный прототип для жюри и его поставка — в репозитории [`deploy`](https://github.com/cvn-mosprom/deploy#readme).
+Compose этого репозитория — для разработки и изолированного e2e. Staging, production и живой прототип (https://ochakovo.velikoss.ru, бот [@cvnprombot](https://t.me/cvnprombot)) разворачиваются из [`deploy`](https://github.com/cvn-mosprom/deploy#readme) с preflight, ограниченными ролями БД, неизменяемыми релизами и runbook восстановления.
+
+## CI/CD и production
+
+```mermaid
+flowchart LR
+  FE["frontend CI"] -->|"PR: сабмодуль"| CI["backend CI: quality · integration · security"]
+  CI --> IMG["api, bot, sim, web: Trivy → push → SBOM + provenance → cosign"]
+  IMG -->|"один release PR"| DEP["deploy"]
+  DEP --> STG["staging, автоматически"]
+  STG -->|"те же digest, вручную"| PRD["production"]
+```
+
+* **`.github/workflows/ci.yml`** — на PR, `main` и `infra/**`: отдельные окружения API и бота из lock-файлов с хэшами, PostgreSQL и Redis на изолированных портах, тесты симулятора, миграций, контракта и настоящего клиента (`tools/e2e.sh`); неожиданные пропуски тестов блокируют выпуск (`tools/check_pytest.py`).
+* **Образы одной связки.** api, bot, sim и web собираются из одного SHA бэкенда и фронтенда, сканируются Trivy до публикации (High/Critical, включая unfixed, — стоп), подписываются cosign и получают SBOM и provenance. API и бот — на Python 3.12 Alpine, Caddy пересобирается с исправленными Go и `x/net` (`web/caddy/README.md`), web-образ генерирует CSP-хэши инлайн-скриптов (`web/generate-csp.mjs`).
+* **`.github/workflows/security.yml`** — еженедельное пересканирование, его же вызывает CI.
+* **Выбор дата-центра.** Клиент берёт каталог регионов у LoadBalancer и меряет задержку анонимным `/routing/ping`; несовместимый клиент получает `426` до изменения состояния. Схема площадок, Patroni, Redis Sentinel и lease бота в etcd — в [`deploy`](https://github.com/cvn-mosprom/deploy#как-клиент-выбирает-дата-центр).
+* **Production preflight** требует сильных секретов, явных HTTPS-origin и роли приложения без административных прав; access-логи API не содержат `user_id` и `tg_id`.
 
 ## Настройка
 
@@ -270,7 +289,7 @@ Mini App открывается только по HTTPS на реальном д
 | `INIT_DATA_MAX_AGE_S` | 86400 | максимальный возраст initData |
 | `INTERNAL_TOKEN` | `dev-internal-token` | общий секрет api и бота для `/internal/*`; в `prod` api не стартует с dev-значением (`openssl rand -hex 24`) |
 | `DATABASE_URL`, `REDIS_URL`, `SIM_URL` | localhost-порты стека | подключения для запуска вне Docker |
-| `API_WORKERS` / `SIM_WORKERS` | 2 / 2 | воркеры, не больше 4 |
+| `API_WORKERS` / `SIM_WORKERS` | 2 / 2 | воркеры; подбирать вместе с CPU/RAM и пулами БД |
 | `DB_STATEMENT_TIMEOUT_MS` / `DB_LOCK_TIMEOUT_MS` / `REQUEST_TIMEOUT_S` / `SLOW_REQUEST_MS` | 3000 / 2000 / 5 / 1000 | таймауты и порог медленного запроса |
 | `SIM_TIMEOUT_S` / `SIM_BREAKER_THRESHOLD` / `SIM_BREAKER_OPEN_S` | 3 / 5 / 10 | таймаут и breaker симулятора |
 | `CORS_ORIGINS` | пусто | нужен только vite dev-серверу на `:5173`; в проде страница и API на одном origin |
@@ -279,6 +298,10 @@ Mini App открывается только по HTTPS на реальном д
 | `BACKUP_INTERVAL_H` / `BACKUP_KEEP` | 6 / 28 | профиль `backup` |
 | `MEDIA_S3_ACCESS_KEY` / `MEDIA_S3_SECRET_KEY` / `MEDIA_SYNC_PRUNE` | dev-значения / 1 | ключи записи в SeaweedFS внутри сети, удаление пропавших файлов |
 | `PGBOUNCER`, `DB_HOST`, `DB_PORT` | 0, `db`, 5432 | переключение на профиль `pgbouncer` |
+| `DB_TLS`, `DB_CA_FILE` | выкл. | TLS до PostgreSQL в распределённом профиле |
+| `REDIS_SENTINEL_NODES`, `REDIS_MASTER_NAME`, `REDIS_PASSWORD`, `REDIS_SENTINEL_PASSWORD`, `REDIS_TLS`, `REDIS_CA_FILE` | пусто | Redis через Sentinel и TLS вместо прямого `REDIS_URL` |
+| `ETCD_ENDPOINTS` + CA/сертификат/ключ | пусто | lease бота в etcd: один активный экземпляр polling и планировщика |
+| `FRONTEND_REVISION` | пусто | при заданном значении API отвергает другой `X-Frontend-Revision` кодом `426 client_update_required` |
 
 ## Разработка
 
@@ -310,7 +333,7 @@ Smoke-набор (`e2e/test_s7_smoke.py`, 36 сценариев) нашёл пя
 
 **Тестовые игроки.** Dev-игрок с именем на `e2e` или tg_id ≥ 10¹² помечается `users.is_test` и исключается из топа, мест, итогов сезона, HR-цифр, CSV и доставки карточек. Перед демо — `python -m app.purge_test_users [--dry-run]`.
 
-**Логи.** `docker compose logs -f api` — одна JSON-строка на запрос (`request_id`, `user_id`, `status`, `error_code`, `duration_ms`).
+**Логи.** `docker compose logs -f api` — одна JSON-строка на запрос (`request_id`, `status`, `error_code`, `duration_ms`); идентификаторы игроков в access-лог не пишутся.
 
 ## Безопасность
 

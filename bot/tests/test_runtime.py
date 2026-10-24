@@ -52,3 +52,12 @@ def test_amain_idles_without_token_until_stopped():
         return await asyncio.wait_for(task, timeout=5)
 
     assert asyncio.run(run()) == 0
+
+
+def test_bot_uses_explicit_telegram_proxy():
+    async def run():
+        bot = make_bot(Settings(bot_token="123456:ABCdefGhIJKlmNoPQRsTUVwxyZ-0123456", telegram_proxy_url="http://127.0.0.1:10890"))
+        assert bot is not None
+        assert bot.session.proxy == "http://127.0.0.1:10890"
+        await bot.session.close()
+    asyncio.run(run())

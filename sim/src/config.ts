@@ -1,7 +1,8 @@
-/** SIM_WORKERS: worker processes behind the shared port. Default 2, max 4; 0 = single in-process server. */
+/** Explicit process count; 0 keeps the single-process development mode. */
 export function workerCount(raw: string | undefined = process.env.SIM_WORKERS): number {
 	if (raw === undefined || raw.trim() === '') return 2;
-	const n = Number.parseInt(raw, 10);
-	if (!Number.isFinite(n) || n < 0) return 2;
-	return Math.min(n, 4);
+	if (!/^\d+$/.test(raw.trim())) throw new Error('SIM_WORKERS must be an integer from 0 to 256');
+	const n = Number(raw);
+	if (!Number.isSafeInteger(n) || n > 256) throw new Error('SIM_WORKERS must be an integer from 0 to 256');
+	return n;
 }

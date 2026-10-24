@@ -1,4 +1,4 @@
-// Entry point. Primary process forks SIM_WORKERS (default 2, max 4) workers that share the listening port;
+// Entry point. Primary process forks SIM_WORKERS (default 2, explicit 0..256) workers that share the listening port;
 // SIM_WORKERS=0 runs a single in-process server (debugging, tests).
 
 import cluster from 'node:cluster';

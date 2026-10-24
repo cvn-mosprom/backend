@@ -12,6 +12,8 @@ set -eu
 
 PREFIX=${BACKUP_PREFIX:-mosprom}
 KEEP=${BACKUP_KEEP:-14}
+case "$KEEP" in ''|*[!0-9]*) echo 'BACKUP_KEEP must be a positive integer' >&2; exit 2;; esac
+[ "$KEEP" -gt 0 ] || { echo 'BACKUP_KEEP must be positive' >&2; exit 2; }
 DIR=${BACKUP_DIR:-}
 if [ -z "${PGHOST:-}" ]; then # by hand on the host: relative to the repo root
     cd "$(dirname "$0")/.."
@@ -37,10 +39,13 @@ dump_once() {
     [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
     mv "$tmp" "$out" # appears atomically: never a half-written .dump
     log "wrote $out ($(wc -c < "$out") bytes)"
-    n=0
-    for f in $(ls -1r "$DIR"/${PREFIX}_*.dump 2> /dev/null); do # timestamped names: reverse sort = newest first
-        n=$((n + 1))
-        if [ "$n" -gt "$KEEP" ]; then rm -f "$f"; log "rotated out $f"; fi
+    # Shell glob order follows the UTC timestamp: oldest first, with whitespace preserved.
+    set -- "$DIR"/"${PREFIX}"_*.dump
+    remaining=$#
+    for f do
+        [ -f "$f" ] || continue
+        if [ "$remaining" -gt "$KEEP" ]; then rm -f "$f"; log "rotated out $f"; fi
+        remaining=$((remaining - 1))
     done
 }
 

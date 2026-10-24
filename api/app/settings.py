@@ -35,6 +35,17 @@ def origin_of(url: str) -> str | None:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
+    frontend_revision: str = ""
+    region_id: str = "local"
+    release_id: str = "dev"
+    redis_sentinel_nodes: str = ""
+    redis_master_name: str = "mosprom"
+    redis_password: str = ""
+    redis_sentinel_password: str = ""
+    db_tls: bool = False
+    db_ca_file: str = ""
+    redis_tls: bool = False
+    redis_ca_file: str = ""
     app_env: Literal["dev", "prod", "test"] = "dev"
     database_url: str = "postgresql+asyncpg://mosprom:mosprom@127.0.0.1:55432/mosprom"
     redis_url: str = "redis://127.0.0.1:56379/0"

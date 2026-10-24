@@ -171,6 +171,8 @@ services:
       INTERNAL_TOKEN: *internal-token
       # S14 web login through the bot: username without "@" for the deep link of POST /api/auth/web/start (empty -> 503 config_error)
       BOT_USERNAME: ${BOT_USERNAME:-}
+      # C3: Telegram ids seeded into hr_users as `admin` on startup when absent (bootstrap only; roles live in the table afterwards)
+      HR_ADMIN_TG_IDS: ${HR_ADMIN_TG_IDS:-}
       # CORS of the web client (empty: dev -> http://localhost:5173, prod -> origin of WEBAPP_URL, else https://DOMAIN)
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       WEBAPP_URL: ${WEBAPP_URL:-}

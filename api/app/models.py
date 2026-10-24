@@ -307,3 +307,105 @@ class WebSession(Base):
 
 
 Index("ix_web_sessions_user", WebSession.user_id)
+
+
+# ---------------------------------------------------------------- C1: achievements
+
+class AchievementEarned(Base):
+    """One row per earned achievement, append-only (never revoked). `season_key` 0 = not seasonal, else the season id (so the
+    unique key needs no NULLs). `earned_season_id` = the server season current when it was earned (informational, feeds
+    `player_scores.season_points`); `granted_via` = hook | shift | recompute | backfill."""
+
+    __tablename__ = "achievements_earned"
+    __table_args__ = (sa.UniqueConstraint("user_id", "achievement_id", "season_key", name="uq_achievements_earned_user_ach_season"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    achievement_id: Mapped[str] = mapped_column(Text, nullable=False)
+    season_key: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    earned_season_id: Mapped[int | None] = mapped_column(ForeignKey("seasons.id"))
+    tier: Mapped[str] = mapped_column(Text, nullable=False)  # bronze | silver | gold
+    points: Mapped[int] = mapped_column(Integer, nullable=False)
+    earned_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    catalog_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    granted_via: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+Index("ix_achievements_earned_user_earned", AchievementEarned.user_id, AchievementEarned.earned_at)
+Index("ix_achievements_earned_ach", AchievementEarned.achievement_id)
+
+
+class AchievementProgress(Base):
+    """Progress bar of one achievement (`current` <= `target`, monotonic). The internal id `_counters` (never in the
+    catalog) keeps the engine's monotonic counters in `meta` (done orders seen, loans repaid)."""
+
+    __tablename__ = "achievement_progress"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    achievement_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    season_key: Mapped[int] = mapped_column(Integer, server_default=text("0"), primary_key=True)
+    current: Mapped[float] = mapped_column(sa.Float, server_default=text("0"), nullable=False)
+    target: Mapped[float] = mapped_column(sa.Float, server_default=text("0"), nullable=False)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    updated_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+class PlayerScore(Base):
+    """Denormalised score per (player, season) for sorting (CRM, board tab). `achievement_points` = lifetime sum of the points
+    of every earned achievement, `season_points` = the part earned during `season_id`. `competency` / `fit` are C2's.
+    `evaluated_at` = start of the last FULL evaluation (the recompute job re-evaluates players changed after it)."""
+
+    __tablename__ = "player_scores"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"), primary_key=True)
+    achievement_points: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    season_points: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    competency: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    fit: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    evaluated_at: Mapped[datetime | None] = _tstz()
+    updated_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_player_scores_season_points", PlayerScore.season_id, PlayerScore.achievement_points.desc())
+
+
+# ---------------------------------------------------------------- C3: HR roles and the candidate event log
+
+HR_ROLES = ("hr", "hr_lead", "analyst", "admin")
+
+
+class HrUser(Base):
+    """Who may use the HR CRM (web, `/api/hr/*`) and the HR bot. Seeded from HR_ADMIN_TG_IDS as `admin` when absent
+    (bootstrap only), then managed through `/api/hr/users`. `user_id` links the player row once the person has played / logged in."""
+
+    __tablename__ = "hr_users"
+    __table_args__ = (sa.CheckConstraint("role in ('hr','hr_lead','analyst','admin')", name="role"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tg_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
+    role: Mapped[str] = mapped_column(Text, nullable=False)  # hr | hr_lead | analyst | admin
+    active: Mapped[bool] = mapped_column(server_default=text("true"), nullable=False)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("hr_users.id", ondelete="SET NULL"))  # NULL = seed
+
+
+class LeadEvent(Base):
+    """History of a candidate: who did what (kind view|status|assign|note|message|export|tag; the set is validated in
+    `app.hr.access.EVENT_KINDS`, not by a constraint, so later sprints add kinds without a migration). Every view of a card
+    with personal data is one `view` row (the access log of 152-FZ)."""
+
+    __tablename__ = "lead_events"
+    __mapper_args__ = {"eager_defaults": True}  # created_at is readable right after the flush (async: no lazy loads)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    lead_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("leads.id", ondelete="CASCADE"), nullable=False)
+    actor_hr_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("hr_users.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    created_at: Mapped[datetime] = _tstz(server_default=sa.func.now(), nullable=False)
+
+
+Index("ix_lead_events_lead_created", LeadEvent.lead_id, LeadEvent.created_at)

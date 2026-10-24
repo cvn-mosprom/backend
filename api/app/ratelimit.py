@@ -40,6 +40,7 @@ LIMITS: dict[str, Limit] = {
     "quiz": Limit(30),
     "auth": Limit(5),  # S14 web login (POST /api/auth/web/code, /start): per IP, whatever Authorization header is sent
     "auth_poll": Limit(60, burst=20),  # S14 POST /api/auth/web/poll: the page polls every ~2 s (30/min); per IP
+    "hr": Limit(120),  # C3: every /api/hr/* route (the CRM web client), per user
     "default": Limit(60),
 }
 IP_LIMITS = frozenset({"auth", "auth_poll"})  # unauthenticated endpoints: always counted per IP, never per user

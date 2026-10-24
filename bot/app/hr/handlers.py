@@ -1,4 +1,5 @@
-"""HR commands and callbacks. Only ``HR_ADMIN_TG_IDS`` may use them; everybody else gets a polite refusal.
+"""HR commands and callbacks. Only active ``hr_users`` (C3; ``HR_ADMIN_TG_IDS`` while that table is empty) may use them,
+everybody else gets a polite refusal. Per command: aggregates = any role, candidates / status buttons = hr+, /export = hr_lead+.
 
 /hr (help)  /leads [status] [uni] [tag] [all]  /lead <id>  /export  /funnel  /sources  /stats  /top [uni]
 Callbacks: ``ls:<lead_id>:<status>`` (status buttons of a card), ``lp:<key>:<page>`` (pages of /leads).
@@ -17,7 +18,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from . import queries, runtime
+from . import access, queries, runtime
 from .format import (LEAD_PREFIX, MSK, QUIZ_TOTAL, STATUSES, card_keyboard, render_card, render_funnel,
                      render_leads_page, render_sources, render_stats, render_top, status_label)
 
@@ -27,17 +28,26 @@ router = Router(name="hr")
 DENIED = "Эта команда доступна только сотрудникам HR."
 DENIED_CB = "Нет доступа: кнопки доступны только сотрудникам HR."
 NO_DB = "База данных недоступна, попробуйте позже."
-HELP = (
-    "<b>HR-бот</b>\n"
-    "/leads [статус] [вуз] [#тег] [all] — анкеты, новые сверху (статусы: new contacted interview rejected hired; "
-    "all — с отозванными)\n"
-    "/lead &lt;id&gt; — карточка анкеты\n"
-    "/export [статус] [вуз] [#тег] — CSV (UTF-8 с BOM, разделитель «;»)\n"
-    "/funnel — воронка текущего сезона\n"
-    "/sources — источники (start_param) и конверсия в анкету\n"
-    "/stats — сводка\n"
-    "/top [вуз] — топ-10 сезона по звёздам"
+# (minimum role, line): /hr shows only what the caller's role may use
+HELP_LINES = (
+    ("analyst", "<b>HR-бот</b>"),
+    ("hr", "/leads [статус] [вуз] [#тег] [all] — анкеты, новые сверху (статусы: new contacted interview rejected hired; "
+           "all — с отозванными)"),
+    ("hr", "/lead &lt;id&gt; — карточка анкеты"),
+    ("hr_lead", "/export [статус] [вуз] [#тег] — CSV (UTF-8 с BOM, разделитель «;»)"),
+    ("analyst", "/funnel — воронка текущего сезона"),
+    ("analyst", "/sources — источники (start_param) и конверсия в анкету"),
+    ("analyst", "/stats — сводка"),
+    ("analyst", "/top [вуз] — топ-10 сезона по звёздам"),
 )
+
+
+def help_for(role: str | None) -> str:
+    return "\n".join(line for need, line in HELP_LINES if access.at_least(role, need))
+
+
+def denied_role(min_role: str, role: str | None) -> str:
+    return f"Недостаточно прав: команда доступна ролям {min_role} и выше (ваша роль: {role})."
 
 _filters: OrderedDict[str, queries.LeadFilter] = OrderedDict()  # pagination state: short key -> filter (callback_data is 64 bytes)
 _FILTERS_MAX = 200
@@ -61,12 +71,17 @@ def _pager(key: str, page: int, pages: int) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
 
 
-async def _guard(message: Message) -> runtime.Runtime | None:
-    """The runtime if the sender is an HR admin and the database is up; otherwise answers and returns None."""
+async def _guard(message: Message, min_role: str = "analyst") -> runtime.Runtime | None:
+    """The runtime if the sender has an active HR role of at least ``min_role`` and the database is up; otherwise answers
+    and returns None."""
     rt = runtime.get()
     uid = message.from_user.id if message.from_user else None
-    if rt is None or not rt.is_admin(uid):
+    role = await rt.role(uid) if rt is not None else None
+    if role is None:
         await message.answer(DENIED)
+        return None
+    if not access.at_least(role, min_role):
+        await message.answer(denied_role(min_role, role))
         return None
     if rt.sm is None:
         await message.answer(NO_DB)
@@ -87,7 +102,8 @@ async def _safe(message: Message, coro_fn) -> None:
 async def on_help(message: Message) -> None:
     rt = runtime.get()
     uid = message.from_user.id if message.from_user else None
-    await message.answer(HELP if rt is not None and rt.is_admin(uid) else DENIED)
+    role = await rt.role(uid) if rt is not None else None
+    await message.answer(help_for(role) if role is not None else DENIED)
 
 
 async def _send_leads_page(target: Message, rt: runtime.Runtime, f: queries.LeadFilter, page: int, *, edit: bool) -> None:
@@ -111,16 +127,15 @@ async def _send_leads_page(target: Message, rt: runtime.Runtime, f: queries.Lead
 
 @router.message(Command("leads"))
 async def on_leads(message: Message, command: CommandObject) -> None:
-    rt = await _guard(message)
+    rt = await _guard(message, "hr")
     if rt:
         await _safe(message, lambda: _send_leads_page(message, rt, queries.parse_filter(command.args), 0, edit=False))
 
 
 @router.callback_query(F.data.startswith("lp:"))
 async def on_leads_page(cb: CallbackQuery) -> None:
-    rt = runtime.get()
-    if rt is None or not rt.is_admin(cb.from_user.id):
-        await cb.answer(DENIED_CB, show_alert=True)
+    rt = await _cb_guard(cb, "hr")
+    if rt is None:
         return
     try:
         _, key, page = (cb.data or "").split(":")
@@ -139,39 +154,52 @@ async def on_leads_page(cb: CallbackQuery) -> None:
     await cb.answer()
 
 
-async def _send_lead(message: Message, rt: runtime.Runtime, lead_id: int) -> None:
+async def _cb_guard(cb: CallbackQuery, min_role: str) -> runtime.Runtime | None:
+    """Callback twin of ``_guard`` (an alert instead of a message; the database check stays with the caller)."""
+    rt = runtime.get()
+    role = await rt.role(cb.from_user.id) if rt is not None else None
+    if role is None:
+        await cb.answer(DENIED_CB, show_alert=True)
+        return None
+    if not access.at_least(role, min_role):
+        await cb.answer(denied_role(min_role, role), show_alert=True)
+        return None
+    return rt
+
+
+async def _send_lead(message: Message, rt: runtime.Runtime, lead_id: int, viewer: int | None = None) -> None:
     async with rt.sm() as s:
         card = await queries.fetch_lead(s, lead_id)
     if card is None:
         await message.answer(f"Анкета #{lead_id} не найдена.")
         return
+    await queries.record_lead_event(rt.sm, lead_id, viewer, "view", {"via": "bot"})  # access log of the personal data
     await message.answer(render_card(card), reply_markup=card_keyboard(card))
 
 
 @router.message(Command("lead"))
 async def on_lead(message: Message, command: CommandObject) -> None:
-    rt = await _guard(message)
+    rt = await _guard(message, "hr")
     if not rt:
         return
     m = re.fullmatch(r"#?(\d{1,18})", (command.args or "").strip())
     if not m:
         await message.answer("Использование: /lead &lt;id&gt;")
         return
-    await _safe(message, lambda: _send_lead(message, rt, int(m.group(1))))
+    await _safe(message, lambda: _send_lead(message, rt, int(m.group(1)), message.from_user.id))
 
 
 @router.message(Command(re.compile(r"lead_(\d{1,18})")))
 async def on_lead_link(message: Message, command: CommandObject) -> None:
-    rt = await _guard(message)
+    rt = await _guard(message, "hr")
     if rt and command.regexp_match:
-        await _safe(message, lambda: _send_lead(message, rt, int(command.regexp_match.group(1))))
+        await _safe(message, lambda: _send_lead(message, rt, int(command.regexp_match.group(1)), message.from_user.id))
 
 
 @router.callback_query(F.data.startswith(LEAD_PREFIX + ":"))
 async def on_status_button(cb: CallbackQuery) -> None:
-    rt = runtime.get()
-    if rt is None or not rt.is_admin(cb.from_user.id):
-        await cb.answer(DENIED_CB, show_alert=True)
+    rt = await _cb_guard(cb, "hr")
+    if rt is None:
         return
     try:
         _, lead_id, status = (cb.data or "").split(":")
@@ -188,7 +216,7 @@ async def on_status_button(cb: CallbackQuery) -> None:
     actor = queries.actor_label(cb.from_user.id, cb.from_user.username, cb.from_user.first_name)
     try:
         async with rt.sm() as s:
-            outcome, card = await queries.set_lead_status(s, lead_id_n, status, actor)
+            outcome, card = await queries.set_lead_status(s, lead_id_n, status, actor, actor_tg_id=cb.from_user.id)
     except Exception as e:
         log.warning("status update failed: %s: %s", type(e).__name__, str(e)[:200])
         await cb.answer("Не удалось сохранить статус, попробуйте ещё раз.", show_alert=True)
@@ -211,7 +239,7 @@ async def on_status_button(cb: CallbackQuery) -> None:
 
 @router.message(Command("export"))
 async def on_export(message: Message, command: CommandObject) -> None:
-    rt = await _guard(message)
+    rt = await _guard(message, "hr_lead")
     if not rt:
         return
 

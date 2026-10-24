@@ -32,8 +32,8 @@ Node: v24 locally, image `node:20-alpine` or newer LTS in Docker. Package manage
 ```
 (`details.version` = the current factory version on a 409; `command_rejected` carries `details.reason` and a fresh `snapshot`; the client's
 parsing rules are in http-contract.md "Ошибки".)
-HTTP status by code: 401 unauthorized|invalid_init_data|auth_expired|invalid_code; 410 login_expired; 403 age_required|consent_required;
-404 *_not_found; 409 version_conflict|lead_already_exists|quiz_already_completed; 422 validation_error|command_rejected|...;
+HTTP status by code: 401 unauthorized|invalid_init_data|auth_expired|invalid_code; 410 login_expired; 403 age_required|consent_required|forbidden (C3: no active `hr_users` row or too low a role on `/api/hr/*`);
+404 *_not_found; 409 version_conflict|lead_already_exists|quiz_already_completed|hr_user_exists|hr_self_change|hr_last_admin; 422 validation_error|command_rejected|...;
 429 rate_limited (+ `Retry-After` header always); 503 sim_unavailable|db_unavailable|redis_unavailable|config_error; 500 internal_error.
 Every response carries `X-Request-ID` (echo incoming header or generate uuid4).
 
@@ -275,7 +275,8 @@ Alembic `0006` (down_revision `0005`: the revision ids are the short strings `00
 
 ## S6 decisions
 
-- HR bot (`bot/app/hr/`): access by `HR_ADMIN_TG_IDS`; lead cards to `HR_CHAT_ID` or every admin; outbox job every 7 s
+- HR bot (`bot/app/hr/`): access by `hr_users` since C3 (`HR_ADMIN_TG_IDS` only while that table is empty / unreadable, see
+  docs/hr-crm-plan.md "C3 as built"); lead cards to `HR_CHAT_ID` or every active hr / hr_lead / admin; outbox job every 7 s
   (`FOR UPDATE SKIP LOCKED`, backoff, never consumed without BOT_TOKEN); status buttons append an audit line to `hr_note`;
   /leads /lead /export (CSV `;` + BOM) /funnel /sources /stats /top /hr. Demo bots excluded from all analytics.
 - Player features (`bot/app/player/`, migration 0007): /start upserts the user (first-touch source), reminder opt-in toggle,

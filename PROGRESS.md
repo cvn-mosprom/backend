@@ -50,3 +50,9 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 ## S15 media in SeaweedFS — done
 - seaweedfs (S3 :8333, bucket `media`, anonymous read only), one-shot media-sync (scripts/media_sync.py) uploads vendor/frontend/web/static/{landing,labels,audio,icons}; Caddy proxies those paths to SeaweedFS; web image no longer carries them. Re-run `docker compose run --rm media-sync` after a submodule bump.
 - Tests: api 867, e2e 360 + 6 skipped.
+
+## HR CRM (docs/hr-crm-plan.md)
+- C1 done: 38 achievements, pure engine, hooks after command/shift (savepoint), internal recompute + bot job every 10 min, backfill (dev: 114 granted to 49 players). Migration 0012.
+- C3 done: hr_users roles (analyst < hr < hr_lead < admin), lead_events, /api/hr/me, /api/hr/users, PII masking for analyst, bot uses roles. Migration 0013.
+- Tests: api 1054, bot 146, e2e 360 + 6 skipped.
+- Next: C2 (points/competencies/fit, player API, achievementsUnlocked, outbox notifications gold+seasonal) and C4 (candidates, pipeline, notes, messages) in parallel; then C5, C6.

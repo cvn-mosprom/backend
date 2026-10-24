@@ -21,6 +21,7 @@ STATUS_BY_CODE: dict[str, int] = {
     "age_required": 403, "consent_required": 403, "forbidden": 403,
     "not_found": 404,
     "version_conflict": 409, "lead_already_exists": 409, "quiz_already_completed": 409,
+    "hr_user_exists": 409, "hr_self_change": 409, "hr_last_admin": 409,  # C3: /api/hr/users
     "validation_error": 422, "command_rejected": 422,
     "rate_limited": 429,
     "internal_error": 500,

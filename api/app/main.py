@@ -12,14 +12,15 @@ from starlette.middleware.gzip import GZipMiddleware
 from .db import make_engine, make_redis, make_sessionmaker
 from .errors import install_error_handlers
 from .middleware import RequestContextMiddleware, setup_logging
-from .routes import board, events, game, health, internal, leads, me, quiz, webauth
+from .hr.access import NoStoreMiddleware, ensure_seeded
+from .routes import board, events, game, health, hr, internal, leads, me, quiz, webauth
 from .settings import Settings, get_settings
 from .sim_client import SimClient
 
 log = logging.getLogger("mosprom.app")
 
 # http-contract.md "Общее": the web client sends X-Telegram-Init-Data / X-Dev-User / Content-Type and reads Retry-After
-CORS_METHODS = ["GET", "POST", "DELETE"]
+CORS_METHODS = ["GET", "POST", "PATCH", "DELETE"]  # PATCH: C3+ /api/hr/* (the dev web client is cross-origin)
 CORS_HEADERS = ["X-Telegram-Init-Data", "X-Dev-User", "Content-Type", "Authorization"]
 CORS_EXPOSE = ["Retry-After", "X-Request-ID"]
 CORS_MAX_AGE = 600
@@ -31,6 +32,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if cfg.is_prod and not cfg.internal_token_ok:  # S7: the bot's /internal/* calls must never run on a guessable token
         log.critical("refusing to start: INTERNAL_TOKEN is missing, too short (< 16) or a placeholder (APP_ENV=prod)")
         raise RuntimeError("INTERNAL_TOKEN is required when APP_ENV=prod")
+    await ensure_seeded(app)  # C3: HR_ADMIN_TG_IDS -> hr_users (idempotent, never fails the startup)
     yield
     await app.state.sim.aclose()
     if app.state.redis is not None:
@@ -63,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # outermost: request id, access log, 5 s request cap (not /internal/*), slow-request log, last-resort 500
     app.add_middleware(RequestContextMiddleware, request_timeout_s=settings.request_timeout_s,
                        slow_ms=settings.slow_request_ms)
+    app.add_middleware(NoStoreMiddleware)  # C3: Cache-Control: no-store on every /api/hr/* answer, errors included
     # S8: added LAST = outermost, so 4xx / 429 / 5xx / timeout answers built by the layers below still carry CORS headers
     # (else the browser reports them as a bare "network error"), and a preflight OPTIONS is answered here, before
     # auth, the rate limiter and the request timeout ever run.
@@ -79,4 +82,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(internal.router)  # /internal/* for the bot's jobs: token-protected, not proxied by caddy
     app.include_router(webauth.router)  # S14: web login via the Telegram bot (public + Bearer session)
     app.include_router(webauth.internal_router)  # S14: /internal/auth/* called by the bot
+    app.include_router(hr.router)  # C3: /api/hr/* (HR CRM; roles in hr_users)
     return app

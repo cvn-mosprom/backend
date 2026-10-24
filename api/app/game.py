@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from .errors import AppError
 from .leaderboard import display_name, rank_of
 from . import seasons
+from .achievements import service as achievements
 from .models import Factory, Season, Shift, User
 from .shift import RULE_CODES, RULES, validate_shift
 from .sim_client import SimClient, now_ms
@@ -222,6 +223,17 @@ def _expect(out: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
     return vals
 
 
+class CommandBody(dict):  # type: ignore[type-arg]
+    """The 200 body of POST /api/command. A plain dict on the wire; `achievements_unlocked` (C1) carries the achievements this
+    command unlocked ([{id, title, description, category, tier, points, hidden, seasonal}]) for the route to use later."""
+
+    achievements_unlocked: list[dict[str, Any]]
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.achievements_unlocked = []
+
+
 # ---------------------------------------------------------------- service
 
 @dataclass(frozen=True)
@@ -383,6 +395,7 @@ class GameService:
             return await self._replay(user.id, row.season_id, entry, row.state, row.version)
 
         rejected: tuple[str, str] | None = None
+        unlocked: list[dict[str, Any]] = []
         replay: tuple[dict[str, Any], dict[str, Any], int] | None = None
         async with self.sm() as session, session.begin():
             locked = await self._lock(session, user.id)
@@ -422,13 +435,18 @@ class GameService:
                                     version=new_version if rejected is None else None)
                 if rejected is None and cmd.get("type") == "submitShift":
                     await self._log_shift(session, user.id, locked.season_id, cmd, state)
+                if rejected is None:  # C1: achievements, in this transaction (cheap state rules; + shift rules after a shift)
+                    unlocked = await achievements.on_command(session, user, locked.season_id, state,
+                                                             shift=cmd.get("type") == "submitShift")
         if replay is not None:
             return await self._replay(*replay)
         await self._idem_put(user.id, key, entry)  # only after the commit
         if rejected is not None:
             raise rejection(rejected[0], rejected[1], new_version, snapshot)
-        return {"ok": True, "version": new_version, "result": entry["result"], "events": [],
-                "snapshot": snapshot, "replayed": False}
+        body = CommandBody({"ok": True, "version": new_version, "result": entry["result"], "events": [],
+                            "snapshot": snapshot, "replayed": False})
+        body.achievements_unlocked = unlocked  # not in the HTTP body yet (C2 adds `achievementsUnlocked`)
+        return body
 
     async def _replay(self, user_id: int, season_id: int, entry: dict[str, Any], state: dict[str, Any],
                       version: int) -> dict[str, Any]:

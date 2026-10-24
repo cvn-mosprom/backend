@@ -3,7 +3,8 @@
 #   cp .env.example .env
 #   SIM_COMMIT=$(scripts/simcommit.sh) docker compose up -d --build
 #
-# Services: caddy (TLS + reverse proxy + web build), api, db, migrate (one-shot), redis, sim, bot.
+# Services: caddy (TLS + reverse proxy + web build), api, db, migrate (one-shot), redis, sim, bot, seaweedfs (site media, S3)
+#   and media-sync (one-shot uploader of the static media into seaweedfs).
 # Optional profiles:
 #   pgbouncer     transaction pooling in front of db. Also set in .env:  DB_HOST=pgbouncer DB_PORT=6432 PGBOUNCER=1
 #   sim-replicas  a second sim container aliased to `sim` (Docker DNS round-robin; the API's SIM_URL stays http://sim:8080)
@@ -28,6 +29,13 @@ x-db-url-direct: &db-url-direct postgresql+asyncpg://${POSTGRES_USER:-mosprom}:$
 
 # One secret shared by api and bot for /internal/* (X-Internal-Token). The dev default is refused by the api under APP_ENV=prod.
 x-internal-token: &internal-token ${INTERNAL_TOKEN:-dev-internal-token}
+
+# S15: credentials of the SeaweedFS identity `media-writer` (deploy/seaweedfs/s3.json is a template filled from these at start).
+# Used only inside the compose network by media-sync; the public gets anonymous read-only access to bucket `media` via caddy.
+# Keys: >= 8 chars of [A-Za-z0-9_-]. The dev defaults are fine for a closed network; set real ones in .env for prod.
+x-media-s3: &media-s3
+  MEDIA_S3_ACCESS_KEY: ${MEDIA_S3_ACCESS_KEY:-media-writer-dev}
+  MEDIA_S3_SECRET_KEY: ${MEDIA_S3_SECRET_KEY:-media-writer-dev-secret}
 
 x-env-file: &env-file
   - path: .env
@@ -87,6 +95,66 @@ services:
     depends_on:
       api:
         condition: service_started
+      media-sync:
+        condition: service_completed_successfully # landing/labels/audio/icons are served from SeaweedFS, not from /srv
+    logging: *logging
+
+  # S15: site media (landing videos/images, product labels, audio samples, icons) live in SeaweedFS, not in the web image.
+  # Reference: lct-testkit/backend. Caddy reads it anonymously (bucket `media`, Read only) and rewrites /landing/* etc. to
+  # /media/landing/*; media-sync (below) fills it. Not published on the host.
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.68
+    restart: unless-stopped
+    mem_limit: 512m
+    # the wrapper renders /tmp/s3.json from MEDIA_S3_* (see deploy/seaweedfs/entrypoint.sh), then runs the image entrypoint.
+    # -master.volumePreallocate=false: otherwise every volume reserves the full volumeSizeLimitMB on disk at creation.
+    entrypoint: ["/bin/sh", "/seaweedfs-entrypoint.sh"]
+    command: >
+      server
+      -dir=/data
+      -master.volumeSizeLimitMB=1024
+      -master.volumePreallocate=false
+      -volume.max=20
+      -s3
+      -s3.port=8333
+      -s3.config=/tmp/s3.json
+    environment: *media-s3
+    volumes:
+      - seaweed_data:/data
+      - ./deploy/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+      - ./deploy/seaweedfs/entrypoint.sh:/seaweedfs-entrypoint.sh:ro
+    expose:
+      - "8333"
+    healthcheck:
+      # 127.0.0.1, not localhost: localhost also resolves to ::1 and SeaweedFS listens on IPv4 only.
+      # master answers AND the S3 gateway answers (any HTTP status, a bare GET / is 403 for anonymous).
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status && (wget -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    logging: *logging
+
+  # One-shot like migrate: creates the bucket, uploads vendor/frontend/web/static/{landing,labels,audio,icons} as media/<path>
+  # (skips unchanged files, prunes removed ones). Re-run after a submodule bump:  docker compose run --rm media-sync
+  media-sync:
+    build:
+      context: ./deploy/media-sync
+    image: mosprom-media-sync:${MEDIA_SYNC_TAG:-dev}
+    restart: "no"
+    environment:
+      <<: *media-s3
+      MEDIA_S3_ENDPOINT: http://seaweedfs:8333
+      MEDIA_BUCKET: media
+      MEDIA_SOURCE_DIR: /src
+      MEDIA_SYNC_PRUNE: ${MEDIA_SYNC_PRUNE:-1}
+    volumes:
+      - ./vendor/frontend/web/static:/src:ro
+      - ./scripts/media_sync.py:/app/media_sync.py:ro
+    mem_limit: 256m
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
     logging: *logging
 
   api:
@@ -99,6 +167,7 @@ services:
       PGBOUNCER: ${PGBOUNCER:-0} # 1 only with the pgbouncer profile (asyncpg: statement_cache_size=0)
       REDIS_URL: redis://redis:6379/0
       SIM_URL: http://sim:8080
+      MEDIA_URL: http://seaweedfs:8333/media # /ready probes it (non-fatal: a media outage must not take the game down)
       INTERNAL_TOKEN: *internal-token
       # S14 web login through the bot: username without "@" for the deep link of POST /api/auth/web/start (empty -> 503 config_error)
       BOT_USERNAME: ${BOT_USERNAME:-}
@@ -280,5 +349,6 @@ services:
 
 volumes:
   pgdata:
+  seaweed_data:
   caddy_data:
   caddy_config:

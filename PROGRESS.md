@@ -46,3 +46,7 @@ Resume rule: read this file, docs/ARCHITECTURE.md and docs/spec-rev4.txt, then c
 - Web login via the bot (migration 0011): /login code -> POST /api/auth/web/code; deep link t.me/<bot>?start=weblogin_<nonce> + /api/auth/web/start|poll; Authorization: Bearer sessions (30 d sliding); /logout_web. One account = one tg_id = one factory. Frontend contract: docs/web-auth.md (frontend lead must add the login screen + Bearer header).
 - Local bot container kept STOPPED (real BOT_TOKEN in .env; the lead runs the bot elsewhere). Rebuild with `--no-deps api`.
 - Tests: api 848, bot 125, e2e 255 + 5 skipped.
+
+## S15 media in SeaweedFS — done
+- seaweedfs (S3 :8333, bucket `media`, anonymous read only), one-shot media-sync (scripts/media_sync.py) uploads vendor/frontend/web/static/{landing,labels,audio,icons}; Caddy proxies those paths to SeaweedFS; web image no longer carries them. Re-run `docker compose run --rm media-sync` after a submodule bump.
+- Tests: api 867, e2e 360 + 6 skipped.

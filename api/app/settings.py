@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:56379/0"
     sim_url: str = "http://127.0.0.1:8080"
     sim_timeout_s: float = 3.0
+    # S15: base URL of the site media in SeaweedFS (compose: http://seaweedfs:8333/media). Only /ready probes it, and a media
+    # outage is reported there but never fails readiness. Empty -> the check is skipped.
+    media_url: str = ""
     bot_token: str = ""
     dev_auth: bool = False
     init_data_max_age_s: int = 86400

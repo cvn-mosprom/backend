@@ -7,6 +7,7 @@ from collections.abc import Awaitable
 from functools import lru_cache
 from pathlib import Path
 
+import httpx
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastapi import APIRouter, Request
@@ -85,6 +86,20 @@ async def check_sim(request: Request) -> str:
     return "ok" if data.get("status") == "ok" else f"error: status={data.get('status')!r}"
 
 
+MEDIA_PROBE_PATH = "/audio/samples.json"  # a small object that must exist once media-sync has run
+
+
+async def check_media(request: Request) -> str:
+    """S15: HEAD of one small public media object in SeaweedFS. INFORMATIONAL: never part of CODE_ORDER, so a media outage
+    shows up under `checks.media` but does not make /ready fail (the game itself does not depend on the media server)."""
+    base = request.app.state.settings.media_url.rstrip("/")
+    if not base:
+        return "skipped: MEDIA_URL missing"
+    async with httpx.AsyncClient(timeout=CHECK_TIMEOUT_S) as c:
+        r = await c.head(base + MEDIA_PROBE_PATH)
+    return "ok" if r.status_code == 200 else f"error: upstream status {r.status_code}"
+
+
 def check_config(request: Request) -> str:
     missing = request.app.state.settings.missing_required()
     return f"error: missing {', '.join(missing)}" if missing else "ok"
@@ -92,8 +107,8 @@ def check_config(request: Request) -> str:
 
 @router.get("/ready")
 async def ready(request: Request):
-    names = ["db", "migrations", "redis", "sim"]
-    results = await asyncio.gather(*(_guard(c(request)) for c in (check_db, check_migrations, check_redis, check_sim)))
+    names = ["db", "migrations", "redis", "sim", "media"]
+    results = await asyncio.gather(*(_guard(c(request)) for c in (check_db, check_migrations, check_redis, check_sim, check_media)))
     checks = dict(zip(names, results))
     checks["config"] = check_config(request)
 

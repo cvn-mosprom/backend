@@ -25,6 +25,10 @@ COPY vendor/frontend/web/package.json vendor/frontend/web/pnpm-lock.yaml vendor/
 RUN pnpm install --frozen-lockfile
 COPY vendor/frontend/web/ ./
 RUN pnpm run build
+# S15: the site media are served from SeaweedFS (compose: seaweedfs + media-sync; Caddyfile: /landing /labels /audio /icons ->
+# /media/...). Drop them from the output so the image carries only the app and SeaweedFS is the single source. The prerendered
+# page build/landing.html is a FILE next to the build/landing/ media dir and stays. Fonts stay (tiny, CSS-critical).
+RUN rm -rf build/landing build/labels build/audio build/icons  && test -f build/landing.html && test -f build/index.html && test -d build/fonts
 
 FROM caddy:2-alpine
 COPY --from=web-build /app/build /srv

@@ -411,3 +411,46 @@ Flows (codes and nonces stored only as sha256; all single-use):
   `DELETE /api/auth/web/session` is a 204 no-op for non-Bearer callers.
 - Internal bodies accept snake_case (`tg_id`, `first_name`) and camelCase. A call without any profile field keeps the stored names;
   `is_test` is set only under DEV_AUTH by the dev rule (testusers.py), never for real ids in prod.
+
+## S15: media in SeaweedFS
+
+Reference: lct-testkit/backend (seaweedfs `server -s3`, `s3.json` identities, Caddy in front). Decision: the frontend code
+references media by same-origin absolute paths (`/landing/*.mp4|webp|jpg|png`, `/labels/*.png`, `/audio/*`, `/icons/*`),
+so we move the files into SeaweedFS WITHOUT touching the frontend:
+- service `seaweedfs` (chrislusf/seaweedfs, pinned tag, `server -dir=/data -s3 -s3.port=8333 -master.volumePreallocate=false
+  -master.volumeSizeLimitMB=…`, volume `seaweed_data`, healthcheck on 127.0.0.1:9333/cluster/status), not published.
+- bucket `media`; `deploy/seaweedfs/s3.json`: identity `media-writer` (Read/Write/List on media, keys from env),
+  `anonymous` with `Read:media` only (these are public site assets).
+- one-shot `media-sync` service (like migrate): uploads `vendor/frontend/web/static/{landing,labels,audio,icons}` into
+  `media/<same path>` with correct Content-Type and `Cache-Control`, idempotent (skips unchanged by md5/ETag), deletes
+  objects no longer in the source (`--prune`). caddy depends on it.
+- Caddy: `/landing/*`, `/labels/*`, `/audio/*`, `/icons/*` -> rewrite to `/media{path}` -> reverse_proxy seaweedfs:8333
+  (anonymous GET, no SigV4, so the prefix rewrite is safe; Range passes through for video). The web image no longer
+  contains these files (removed after the build), so SeaweedFS is the only source.
+- Fonts stay in the web build (tiny, CSS-critical).
+
+### S15 as built
+
+- Compose: `seaweedfs` (`chrislusf/seaweedfs:3.68`, `server -s3`, `-master.volumePreallocate=false`, `-volume.max=20`, volume
+  `seaweed_data`, `mem_limit` 512m, healthcheck = master `/cluster/status` AND the S3 gateway answering; cold start takes ~25 s for the
+  raft election) and `media-sync` (`deploy/media-sync/Dockerfile` = python:3.12-slim + boto3; `scripts/media_sync.py` and the
+  static dir are mounted read-only, so no rebuild when either changes). `caddy` depends on `media-sync: service_completed_successfully`.
+- Identities: SeaweedFS only reads `s3.json` from a file, so `deploy/seaweedfs/s3.json` is a template (`${MEDIA_S3_ACCESS_KEY}`...) and
+  `deploy/seaweedfs/entrypoint.sh` renders `/tmp/s3.json` from the env at start (keys validated to `[A-Za-z0-9_-]`, >= 8 chars; the
+  secret never lands in git). `media-writer` has `Admin:media`, `Read/Write/List:media` (Admin is needed to create the bucket, scoped to
+  that one bucket); `anonymous` has `Read:media` only. Verified: anonymous PUT / DELETE / list answer 403.
+- Caddy: `rewrite * /media{path}` -> `reverse_proxy seaweedfs:8333` (`Host` set to the upstream). Only GET/HEAD (others 405). Query: only
+  the client's cache-buster `?v=<rev>` (icons/buildings.png) is allowed; any other query would reach S3 as a sub-resource (`?tagging`,
+  `?uploads`...), so it is a 404. S3 400/403/404/501 -> plain `404 not found` (no XML). Cache-Control / Content-Type / ETag / Range come
+  from the stored object (`public, max-age=86400`, not immutable: the files are not content-hashed). `/landing` (no trailing slash,
+  the prerendered page) is still the SPA/`landing.html`; `/landing/` is media.
+- Web image: `web/Dockerfile` deletes `build/{landing,labels,audio,icons}` after the build and asserts `landing.html`, `index.html`,
+  `fonts/` are still there; the image is the app only, SeaweedFS the single source of the media.
+- `/ready`: `checks.media` = HEAD of `MEDIA_URL`/audio/samples.json (`MEDIA_URL=http://seaweedfs:8333/media` in compose; empty ->
+  `skipped`). It is NOT in `CODE_ORDER`: a media outage is visible there but never makes readiness fail (verified by stopping seaweedfs:
+  `/ready` 200, `/play`, `/api/bootstrap` fine, media 502).
+- Trade-off to know: because `caddy` waits for `media-sync` at `up`, a SeaweedFS that cannot start also blocks a fresh `up` of caddy
+  (the running stack is unaffected). Drop that `depends_on` entry if you prefer the site to come up without media.
+- Tests: `e2e/test_s15_media.py` (every file byte-identical with the right Content-Type through Caddy, Range 206 on the five videos, 404 /
+  405 / query rules, caddy image has no media, media-sync idempotent + prune, anonymous cannot write, `E2E_DOCKER=1` seaweedfs-down test,
+  unit tests of the script against a fake S3), `api/tests/test_health.py` (media check).

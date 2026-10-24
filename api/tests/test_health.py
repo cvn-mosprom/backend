@@ -61,7 +61,7 @@ async def test_ready_db_unavailable(make_client, redis_ok, monkeypatch):
     c = await make_client()
     err = assert_error(await c.get("/ready"), 503, "db_unavailable")
     checks = err["details"]["checks"]
-    assert set(checks) == {"db", "migrations", "redis", "sim", "config"}
+    assert set(checks) == {"db", "migrations", "redis", "sim", "media", "config"}
     assert checks["db"] == "error: ConnectionError" and checks["redis"] == "ok" and checks["sim"] == "ok"
 
 
@@ -140,7 +140,9 @@ async def test_ready_all_ok(make_client, clean_db, clean_redis):
     c = await make_client(database_url=TEST_DB_URL, redis_url=TEST_REDIS_URL)
     resp = await c.get("/ready")
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"status": "ready", "checks": {
+    body = resp.json()
+    body["checks"].pop("media")  # non-fatal, its value depends on MEDIA_URL (see the S15 tests below)
+    assert body == {"status": "ready", "checks": {
         "db": "ok", "migrations": "ok", "redis": "ok", "sim": "ok", "config": "ok"}}
 
 
@@ -163,3 +165,34 @@ async def test_ready_without_alembic_version_table(make_client, clean_db, clean_
         assert err["details"]["checks"]["migrations"].startswith("error")
     finally:
         await clean_db.execute("ALTER TABLE alembic_version_x RENAME TO alembic_version")
+
+
+# ---- S15: media (SeaweedFS) is reported but never fatal
+
+async def test_ready_media_skipped_without_media_url(make_client, db_ok, redis_ok):
+    c = await make_client()
+    resp = await c.get("/ready")
+    assert resp.status_code == 200 and resp.json()["checks"]["media"] == "skipped: MEDIA_URL missing"
+
+
+async def test_ready_media_outage_does_not_fail_readiness(make_client, db_ok, redis_ok, monkeypatch):
+    monkeypatch.setattr(health_routes, "check_media", bad)
+    c = await make_client(media_url="http://seaweedfs:8333/media")
+    resp = await c.get("/ready")
+    assert resp.status_code == 200 and resp.json()["status"] == "ready"
+    assert resp.json()["checks"]["media"] == "error: ConnectionError"
+
+
+@pytest.mark.parametrize(("status", "expected"), [(200, "ok"), (404, "error: upstream status 404"), (503, "error: upstream status 503")])
+async def test_check_media_probes_one_small_object(make_client, db_ok, redis_ok, monkeypatch, status, expected):
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status)
+
+    c = await make_client(media_url="http://seaweedfs:8333/media/")
+    real = httpx.AsyncClient  # patched only after the test client exists (same httpx module)
+    monkeypatch.setattr(health_routes.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    assert (await c.get("/ready")).json()["checks"]["media"] == expected
+    assert [(r.method, str(r.url)) for r in seen] == [("HEAD", "http://seaweedfs:8333/media/audio/samples.json")]

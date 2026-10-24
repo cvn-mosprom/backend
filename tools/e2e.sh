@@ -18,6 +18,7 @@ WEBAPP_URL=http://localhost/app
 BOT_TOKEN=123456:TEST-BOT-TOKEN
 INTERNAL_TOKEN=ci-only-internal-token-0123456789
 HR_ADMIN_TG_IDS=1700000000005
+BOT_USERNAME=mosprom_ci_bot
 ENV
 export SIM_COMMIT
 SIM_COMMIT="$(git rev-parse HEAD:vendor/frontend)"

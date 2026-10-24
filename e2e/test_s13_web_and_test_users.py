@@ -32,9 +32,9 @@ def test_spa_routes_fall_back_to_html(web, path):
 def test_hashed_assets_are_cached_forever(web):
     import re
 
-    asset = re.search(r'"(/_app/immutable/[^"]+\.js)"', web.get("/").text)
+    asset = re.search(r'"((?:\./|/)_app/immutable/[^"]+\.js)"', web.get("/").text)
     assert asset, "no hashed asset referenced from index.html"
-    r = web.get(asset.group(1))
+    r = web.get(asset.group(1).removeprefix("."))
     assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
     assert "javascript" in r.headers["content-type"]
 

@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
-    "@types/node": "22.15.0",
+    "@types/node": "26.6.6",
     "@types/three": "0.186.0",
     "typescript": "5.9.3",
     "vitest": "5.0.5",

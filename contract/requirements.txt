@@ -1,5 +1,5 @@
 # Tooling for contract generation + contract tests (contract/.venv)
-datamodel-code-generator==0.86.0
+datamodel-code-generator==0.87.0
 pydantic==2.12.3
 pytest==9.0.3
 black==26.10.1

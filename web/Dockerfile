@@ -47,7 +47,7 @@ RUN if [ "$EXTERNAL_MEDIA" = "1" ]; then rm -rf build/landing build/labels build
     && test -f build/200.html && test -f build/index.html && test -d build/fonts
 
 # Rebuild the upstream Caddy command with patched Go and the reviewed module lock.
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS caddy-build
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS caddy-build
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 WORKDIR /src
 COPY web/caddy/go.mod web/caddy/go.sum ./

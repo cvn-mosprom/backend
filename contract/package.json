@@ -9,7 +9,7 @@
     "check": "node generate.mjs --check"
   },
   "devDependencies": {
-    "ts-json-schema-generator": "2.9.0",
+    "ts-json-schema-generator": "2.10.0",
     "typescript": "5.9.3"
   }
 }
